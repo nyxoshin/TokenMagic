@@ -238,21 +238,31 @@ function buildVariableIndex(
       continue;
     }
 
-    const entry: VariableLookupEntry = {
-      key: normalizedPath,
-      collectionId: collection.id,
-      collectionName: collection.name,
-      variable,
-      variablePath: fullPath,
-      normalizedPath
-    };
-
-    const existing = index.get(normalizedPath) ?? [];
-    existing.push(entry);
-    index.set(normalizedPath, existing);
+    insertVariableIntoIndex(index, variable, collection);
   }
 
   return index;
+}
+
+function insertVariableIntoIndex(
+  index: Map<string, VariableLookupEntry[]>,
+  variable: Variable,
+  collection: VariableCollection
+): void {
+  const fullPath = `${collection.name}/${variable.name}`;
+  const normalizedPath = normalizeTokenPath(fullPath);
+  const entry: VariableLookupEntry = {
+    key: normalizedPath,
+    collectionId: collection.id,
+    collectionName: collection.name,
+    variable,
+    variablePath: fullPath,
+    normalizedPath
+  };
+
+  const existing = index.get(normalizedPath) ?? [];
+  existing.push(entry);
+  index.set(normalizedPath, existing);
 }
 
 function prepareSelection(selection: readonly SceneNode[]): PreparedComponent[] {
@@ -324,10 +334,17 @@ async function collectMatches(
 }
 
 function walkNodes(root: SceneNode): SceneNode[] {
+  if (root.type === "INSTANCE") {
+    return [];
+  }
+
   const nodes: SceneNode[] = [root];
 
   if ("children" in root) {
     for (const child of root.children) {
+      if (child.type === "INSTANCE") {
+        continue;
+      }
       nodes.push(...walkNodes(child as SceneNode));
     }
   }
@@ -365,7 +382,7 @@ async function inspectNodeBindings(
       continue;
     }
 
-    const match = findVariableMatch(node.name, bindable.property, component, variableIndex);
+    const match = findVariableMatch(node, bindable.property, component, variableIndex);
     candidates.push({
       id: `${node.id}:${bindable.property}`,
       nodeId: node.id,
@@ -377,8 +394,8 @@ async function inspectNodeBindings(
       matchedVariableId: match?.variable.id,
       matchedVariablePath: match?.variablePath,
       proposedCollectionName: match?.collectionName ?? firstCollectionName(variableIndex) ?? "Semantic",
-      proposedPath: match?.variablePath ?? proposePath(firstCollectionName(variableIndex) ?? "Semantic", component, node.name, bindable.property),
-      candidatePaths: buildCandidatePaths(firstCollectionName(variableIndex) ?? "Semantic", component, node.name, bindable.property),
+      proposedPath: match?.variablePath ?? proposePath(firstCollectionName(variableIndex) ?? "Semantic", component, node, bindable.property),
+      candidatePaths: buildCandidatePaths(firstCollectionName(variableIndex) ?? "Semantic", component, node, bindable.property),
       variantSegments: component.variantSegments,
       variantProperties: component.variantSegments.map((segment) => segment.property),
       skippedBecauseBound: false
@@ -398,7 +415,10 @@ function extractBindableFields(
     const fill = (anyNode.fills as Paint[]).find((paint) => paint.type === "SOLID") as SolidPaint | undefined;
     if (fill) {
       items.push({ property: "fills.color", rawValue: fill.color, resolvedType: "COLOR" });
-      items.push({ property: "fills.opacity", rawValue: fill.opacity ?? 1, resolvedType: "FLOAT" });
+      const fillOpacity = fill.opacity ?? 1;
+      if (!isFullOpacity(fillOpacity)) {
+        items.push({ property: "fills.opacity", rawValue: fillOpacity, resolvedType: "FLOAT" });
+      }
     }
   }
 
@@ -424,6 +444,9 @@ function extractBindableFields(
 
   for (const field of numericFields) {
     if (typeof anyNode[field] === "number") {
+      if (field === "opacity" && isFullOpacity(anyNode[field] as number)) {
+        continue;
+      }
       items.push({ property: field, rawValue: anyNode[field] as number, resolvedType: "FLOAT" });
     }
   }
@@ -511,13 +534,13 @@ function extractExistingBinding(
 }
 
 function findVariableMatch(
-  layerName: string,
+  node: SceneNode,
   property: BindableProperty,
   component: PreparedComponent,
   variableIndex: Map<string, VariableLookupEntry[]>
 ): VariableLookupEntry | null {
   for (const collectionName of collectionNames(variableIndex)) {
-    const candidatePaths = buildCandidatePaths(collectionName, component, layerName, property);
+    const candidatePaths = buildCandidatePaths(collectionName, component, node, property);
     for (const candidatePath of candidatePaths) {
       const exact = variableIndex.get(candidatePath);
       if (exact?.length) {
@@ -539,7 +562,7 @@ function findVariableMatch(
 function buildCandidatePaths(
   collectionName: string,
   component: PreparedComponent,
-  layerName: string,
+  node: SceneNode,
   property: BindableProperty
 ): string[] {
   const baseSegments = [
@@ -549,13 +572,22 @@ function buildCandidatePaths(
     ...component.variantSegments.map((segment) => normalizeSegment(segment.value))
   ];
 
-  const layerSegment = normalizeSegment(layerName);
-  const aliases = PROPERTY_ALIASES[property];
-  const leafs = new Set<string>([
-    layerSegment,
-    ...aliases.map((alias) => normalizeSegment(alias)),
-    ...aliases.map((alias) => `${layerSegment}/${normalizeSegment(alias)}`)
-  ]);
+  const layerSegment = normalizeSegment(node.name);
+  const preferredLeaf = getTokenLeaf(node, component, property);
+  const leafs = new Set<string>();
+
+  if (preferredLeaf) {
+    leafs.add(preferredLeaf);
+  }
+
+  if (layerSegment && layerSegment !== preferredLeaf) {
+    leafs.add(layerSegment);
+  }
+
+  const primaryAlias = normalizeSegment(PROPERTY_ALIASES[property][0] ?? property);
+  if (layerSegment && layerSegment !== primaryAlias) {
+    leafs.add(`${layerSegment}/${primaryAlias}`);
+  }
 
   const candidates: string[] = [];
   for (const leaf of leafs) {
@@ -571,7 +603,7 @@ function buildCandidatePaths(
 function proposePath(
   collectionName: string,
   component: PreparedComponent,
-  layerName: string,
+  node: SceneNode,
   property: BindableProperty,
   allowedVariantProperties?: string[]
 ): string {
@@ -580,8 +612,7 @@ function proposePath(
       ? component.variantSegments
       : component.variantSegments.filter((segment) => allowedVariantProperties.includes(segment.property));
 
-  const aliases = PROPERTY_ALIASES[property];
-  const lastSegment = normalizeSegment(layerName) || normalizeSegment(aliases[0]);
+  const lastSegment = getTokenLeaf(node, component, property);
   return [
     collectionName,
     COMPONENT_SEGMENT,
@@ -686,6 +717,7 @@ async function ensureVariableForCandidate(
   }
 
   const variable = figma.variables.createVariable(variableName, collection, candidate.resolvedType);
+  insertVariableIntoIndex(variableIndex, variable, collection);
   const modeId = collection.defaultModeId ?? collection.modes[0]?.modeId;
   if (!modeId) {
     throw new Error(`Collection ${collection.name} has no writable mode.`);
@@ -700,7 +732,15 @@ async function ensureVariableForCandidate(
       selectedVariantProperties.includes(segment.property)
     )
   };
-  candidate.proposedPath = proposePath(collection.name, component, candidate.nodeName, candidate.property, selectedVariantProperties);
+  candidate.proposedPath = [
+    collection.name,
+    COMPONENT_SEGMENT,
+    component.componentName,
+    ...component.variantSegments.map((segment) => segment.value),
+    normalizeSegment(segments[segments.length - 1] ?? "")
+  ]
+    .map((segment) => normalizeSegment(segment))
+    .join("/");
 
   return variable;
 }
@@ -843,6 +883,140 @@ function toVariableValue(rawValue: RawValue, resolvedType: VariableResolvedDataT
 
 function numberOrZero(value: number | typeof figma.mixed): number {
   return typeof value === "number" ? value : 0;
+}
+
+function getTokenLeaf(node: SceneNode, component: PreparedComponent, property: BindableProperty): string {
+  const primaryAlias = normalizeSegment(PROPERTY_ALIASES[property][0] ?? property);
+  const layerSegment = normalizeSegment(node.name);
+  const groupedAlias = getGroupedAlias(node, property);
+  if (groupedAlias) {
+    return groupedAlias;
+  }
+
+  if (shouldUsePropertyAliasLeaf(node, component, property)) {
+    return primaryAlias;
+  }
+
+  return layerSegment || primaryAlias;
+}
+
+function getGroupedAlias(node: SceneNode, property: BindableProperty): string | null {
+  if (
+    isPaddingProperty(property) &&
+    hasEqualNumericValues(node, "paddingTop", "paddingRight") &&
+    hasEqualNumericValues(node, "paddingTop", "paddingBottom") &&
+    hasEqualNumericValues(node, "paddingTop", "paddingLeft")
+  ) {
+    return "padding";
+  }
+
+  if (isHorizontalPaddingProperty(property) && hasEqualNumericValues(node, "paddingLeft", "paddingRight")) {
+    return "padding-horizontal";
+  }
+
+  if (isVerticalPaddingProperty(property) && hasEqualNumericValues(node, "paddingTop", "paddingBottom")) {
+    return "padding-vertical";
+  }
+
+  if (
+    isRadiusProperty(property) &&
+    hasEqualNumericValues(node, "topLeftRadius", "topRightRadius") &&
+    hasEqualNumericValues(node, "topLeftRadius", "bottomLeftRadius") &&
+    hasEqualNumericValues(node, "topLeftRadius", "bottomRightRadius")
+  ) {
+    return "radius";
+  }
+
+  if (isHorizontalRadiusProperty(property) && hasEqualNumericValues(node, "topLeftRadius", "topRightRadius")) {
+    return "radius-top";
+  }
+
+  if (isHorizontalBottomRadiusProperty(property) && hasEqualNumericValues(node, "bottomLeftRadius", "bottomRightRadius")) {
+    return "radius-bottom";
+  }
+
+  return null;
+}
+
+function shouldUsePropertyAliasLeaf(
+  node: SceneNode,
+  component: PreparedComponent,
+  property: BindableProperty
+): boolean {
+  if (node.id === component.node.id) {
+    return true;
+  }
+
+  if (looksLikeVariantNodeName(node.name)) {
+    return true;
+  }
+
+  return (
+    property === "opacity" ||
+    property === "fills.opacity" ||
+    property === "paddingTop" ||
+    property === "paddingRight" ||
+    property === "paddingBottom" ||
+    property === "paddingLeft" ||
+    property === "itemSpacing" ||
+    property === "topLeftRadius" ||
+    property === "topRightRadius" ||
+    property === "bottomLeftRadius" ||
+    property === "bottomRightRadius"
+  ) && !normalizeSegment(node.name);
+}
+
+function looksLikeVariantNodeName(value: string): boolean {
+  return value.includes("=") && /[a-z]/i.test(value);
+}
+
+function hasEqualNumericValues(node: SceneNode, first: string, second: string): boolean {
+  const firstValue = getNumericNodeValue(node, first);
+  const secondValue = getNumericNodeValue(node, second);
+  return firstValue !== null && secondValue !== null && Math.abs(firstValue - secondValue) < 0.0001;
+}
+
+function getNumericNodeValue(node: SceneNode, field: string): number | null {
+  const value = (node as SceneNode & Record<string, unknown>)[field];
+  return typeof value === "number" ? value : null;
+}
+
+function isPaddingProperty(property: BindableProperty): boolean {
+  return (
+    property === "paddingTop" ||
+    property === "paddingRight" ||
+    property === "paddingBottom" ||
+    property === "paddingLeft"
+  );
+}
+
+function isHorizontalPaddingProperty(property: BindableProperty): boolean {
+  return property === "paddingLeft" || property === "paddingRight";
+}
+
+function isVerticalPaddingProperty(property: BindableProperty): boolean {
+  return property === "paddingTop" || property === "paddingBottom";
+}
+
+function isRadiusProperty(property: BindableProperty): boolean {
+  return (
+    property === "topLeftRadius" ||
+    property === "topRightRadius" ||
+    property === "bottomLeftRadius" ||
+    property === "bottomRightRadius"
+  );
+}
+
+function isHorizontalRadiusProperty(property: BindableProperty): boolean {
+  return property === "topLeftRadius" || property === "topRightRadius";
+}
+
+function isHorizontalBottomRadiusProperty(property: BindableProperty): boolean {
+  return property === "bottomLeftRadius" || property === "bottomRightRadius";
+}
+
+function isFullOpacity(value: number): boolean {
+  return Math.abs(value - 1) < 0.0001 || Math.abs(value - 100) < 0.0001;
 }
 
 function formatError(error: unknown): string {

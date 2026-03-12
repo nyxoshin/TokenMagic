@@ -82,12 +82,15 @@ async function analyzeSelection() {
         type: "analysis",
         ready: matches
             .filter((match) => match.matched)
-            .map((match) => ({
-            id: match.id,
-            label: `${match.nodeName} · ${match.property}`,
-            path: match.matchedVariablePath ?? "",
-            checked: true
-        })),
+            .map((match) => {
+            var _a;
+            return ({
+                id: match.id,
+                label: `${match.nodeName} · ${match.property}`,
+                path: (_a = match.matchedVariablePath) !== null && _a !== void 0 ? _a : "",
+                checked: true
+            });
+        }),
         unmatched: matches
             .filter((match) => !match.matched && !match.skippedBecauseBound)
             .map((match) => ({
@@ -114,19 +117,25 @@ function buildVariableIndex(variables, collectionById) {
         if (!normalizedPath.includes(`/${COMPONENT_SEGMENT}/`)) {
             continue;
         }
-        const entry = {
-            key: normalizedPath,
-            collectionId: collection.id,
-            collectionName: collection.name,
-            variable,
-            variablePath: fullPath,
-            normalizedPath
-        };
-        const existing = index.get(normalizedPath) ?? [];
-        existing.push(entry);
-        index.set(normalizedPath, existing);
+        insertVariableIntoIndex(index, variable, collection);
     }
     return index;
+}
+function insertVariableIntoIndex(index, variable, collection) {
+    var _a;
+    const fullPath = `${collection.name}/${variable.name}`;
+    const normalizedPath = normalizeTokenPath(fullPath);
+    const entry = {
+        key: normalizedPath,
+        collectionId: collection.id,
+        collectionName: collection.name,
+        variable,
+        variablePath: fullPath,
+        normalizedPath
+    };
+    const existing = (_a = index.get(normalizedPath)) !== null && _a !== void 0 ? _a : [];
+    existing.push(entry);
+    index.set(normalizedPath, existing);
 }
 function prepareSelection(selection) {
     const prepared = [];
@@ -182,15 +191,22 @@ async function collectMatches(components, variableIndex) {
     return matches;
 }
 function walkNodes(root) {
+    if (root.type === "INSTANCE") {
+        return [];
+    }
     const nodes = [root];
     if ("children" in root) {
         for (const child of root.children) {
+            if (child.type === "INSTANCE") {
+                continue;
+            }
             nodes.push(...walkNodes(child));
         }
     }
     return nodes;
 }
 async function inspectNodeBindings(node, component, variableIndex) {
+    var _a, _b, _c, _d, _e, _f;
     const candidates = [];
     const bindables = extractBindableFields(node);
     for (const bindable of bindables) {
@@ -204,7 +220,7 @@ async function inspectNodeBindings(node, component, variableIndex) {
                 resolvedType: bindable.resolvedType,
                 rawValue: bindable.rawValue,
                 matched: false,
-                proposedCollectionName: firstCollectionName(variableIndex) ?? "Semantic",
+                proposedCollectionName: (_a = firstCollectionName(variableIndex)) !== null && _a !== void 0 ? _a : "Semantic",
                 proposedPath: "",
                 candidatePaths: [],
                 variantSegments: component.variantSegments,
@@ -214,7 +230,7 @@ async function inspectNodeBindings(node, component, variableIndex) {
             });
             continue;
         }
-        const match = findVariableMatch(node.name, bindable.property, component, variableIndex);
+        const match = findVariableMatch(node, bindable.property, component, variableIndex);
         candidates.push({
             id: `${node.id}:${bindable.property}`,
             nodeId: node.id,
@@ -223,11 +239,11 @@ async function inspectNodeBindings(node, component, variableIndex) {
             resolvedType: bindable.resolvedType,
             rawValue: bindable.rawValue,
             matched: Boolean(match),
-            matchedVariableId: match?.variable.id,
-            matchedVariablePath: match?.variablePath,
-            proposedCollectionName: match?.collectionName ?? firstCollectionName(variableIndex) ?? "Semantic",
-            proposedPath: match?.variablePath ?? proposePath(firstCollectionName(variableIndex) ?? "Semantic", component, node.name, bindable.property),
-            candidatePaths: buildCandidatePaths(firstCollectionName(variableIndex) ?? "Semantic", component, node.name, bindable.property),
+            matchedVariableId: match === null || match === void 0 ? void 0 : match.variable.id,
+            matchedVariablePath: match === null || match === void 0 ? void 0 : match.variablePath,
+            proposedCollectionName: (_c = (_b = match === null || match === void 0 ? void 0 : match.collectionName) !== null && _b !== void 0 ? _b : firstCollectionName(variableIndex)) !== null && _c !== void 0 ? _c : "Semantic",
+            proposedPath: (_d = match === null || match === void 0 ? void 0 : match.variablePath) !== null && _d !== void 0 ? _d : proposePath((_e = firstCollectionName(variableIndex)) !== null && _e !== void 0 ? _e : "Semantic", component, node, bindable.property),
+            candidatePaths: buildCandidatePaths((_f = firstCollectionName(variableIndex)) !== null && _f !== void 0 ? _f : "Semantic", component, node, bindable.property),
             variantSegments: component.variantSegments,
             variantProperties: component.variantSegments.map((segment) => segment.property),
             skippedBecauseBound: false
@@ -236,13 +252,17 @@ async function inspectNodeBindings(node, component, variableIndex) {
     return candidates;
 }
 function extractBindableFields(node) {
+    var _a;
     const items = [];
     const anyNode = node;
     if ("fills" in anyNode && Array.isArray(anyNode.fills)) {
         const fill = anyNode.fills.find((paint) => paint.type === "SOLID");
         if (fill) {
             items.push({ property: "fills.color", rawValue: fill.color, resolvedType: "COLOR" });
-            items.push({ property: "fills.opacity", rawValue: fill.opacity ?? 1, resolvedType: "FLOAT" });
+            const fillOpacity = (_a = fill.opacity) !== null && _a !== void 0 ? _a : 1;
+            if (!isFullOpacity(fillOpacity)) {
+                items.push({ property: "fills.opacity", rawValue: fillOpacity, resolvedType: "FLOAT" });
+            }
         }
     }
     if ("strokes" in anyNode && Array.isArray(anyNode.strokes)) {
@@ -265,6 +285,9 @@ function extractBindableFields(node) {
     ];
     for (const field of numericFields) {
         if (typeof anyNode[field] === "number") {
+            if (field === "opacity" && isFullOpacity(anyNode[field])) {
+                continue;
+            }
             items.push({ property: field, rawValue: anyNode[field], resolvedType: "FLOAT" });
         }
     }
@@ -336,12 +359,12 @@ function extractExistingBinding(node, property) {
     }
     return null;
 }
-function findVariableMatch(layerName, property, component, variableIndex) {
+function findVariableMatch(node, property, component, variableIndex) {
     for (const collectionName of collectionNames(variableIndex)) {
-        const candidatePaths = buildCandidatePaths(collectionName, component, layerName, property);
+        const candidatePaths = buildCandidatePaths(collectionName, component, node, property);
         for (const candidatePath of candidatePaths) {
             const exact = variableIndex.get(candidatePath);
-            if (exact?.length) {
+            if (exact === null || exact === void 0 ? void 0 : exact.length) {
                 return exact[0];
             }
         }
@@ -354,20 +377,27 @@ function findVariableMatch(layerName, property, component, variableIndex) {
     }
     return null;
 }
-function buildCandidatePaths(collectionName, component, layerName, property) {
+function buildCandidatePaths(collectionName, component, node, property) {
+    var _a;
     const baseSegments = [
         normalizeSegment(collectionName),
         COMPONENT_SEGMENT,
         normalizeSegment(component.componentName),
         ...component.variantSegments.map((segment) => normalizeSegment(segment.value))
     ];
-    const layerSegment = normalizeSegment(layerName);
-    const aliases = PROPERTY_ALIASES[property];
-    const leafs = new Set([
-        layerSegment,
-        ...aliases.map((alias) => normalizeSegment(alias)),
-        ...aliases.map((alias) => `${layerSegment}/${normalizeSegment(alias)}`)
-    ]);
+    const layerSegment = normalizeSegment(node.name);
+    const preferredLeaf = getTokenLeaf(node, component, property);
+    const leafs = new Set();
+    if (preferredLeaf) {
+        leafs.add(preferredLeaf);
+    }
+    if (layerSegment && layerSegment !== preferredLeaf) {
+        leafs.add(layerSegment);
+    }
+    const primaryAlias = normalizeSegment((_a = PROPERTY_ALIASES[property][0]) !== null && _a !== void 0 ? _a : property);
+    if (layerSegment && layerSegment !== primaryAlias) {
+        leafs.add(`${layerSegment}/${primaryAlias}`);
+    }
     const candidates = [];
     for (const leaf of leafs) {
         if (!leaf) {
@@ -377,12 +407,11 @@ function buildCandidatePaths(collectionName, component, layerName, property) {
     }
     return candidates;
 }
-function proposePath(collectionName, component, layerName, property, allowedVariantProperties) {
+function proposePath(collectionName, component, node, property, allowedVariantProperties) {
     const filteredSegments = allowedVariantProperties === undefined
         ? component.variantSegments
         : component.variantSegments.filter((segment) => allowedVariantProperties.includes(segment.property));
-    const aliases = PROPERTY_ALIASES[property];
-    const lastSegment = normalizeSegment(layerName) || normalizeSegment(aliases[0]);
+    const lastSegment = getTokenLeaf(node, component, property);
     return [
         collectionName,
         COMPONENT_SEGMENT,
@@ -450,8 +479,9 @@ async function executeBindings(message) {
     };
 }
 async function ensureVariableForCandidate(candidate, editedPath, selectedVariantProperties, collections, variableIndex) {
+    var _a, _b, _c, _d;
     const normalizedEditedPath = normalizeTokenPath(editedPath);
-    const existing = variableIndex.get(normalizedEditedPath)?.[0];
+    const existing = (_a = variableIndex.get(normalizedEditedPath)) === null || _a === void 0 ? void 0 : _a[0];
     if (existing) {
         return existing.variable;
     }
@@ -467,7 +497,8 @@ async function ensureVariableForCandidate(candidate, editedPath, selectedVariant
         collections.push(collection);
     }
     const variable = figma.variables.createVariable(variableName, collection, candidate.resolvedType);
-    const modeId = collection.defaultModeId ?? collection.modes[0]?.modeId;
+    insertVariableIntoIndex(variableIndex, variable, collection);
+    const modeId = (_b = collection.defaultModeId) !== null && _b !== void 0 ? _b : (_c = collection.modes[0]) === null || _c === void 0 ? void 0 : _c.modeId;
     if (!modeId) {
         throw new Error(`Collection ${collection.name} has no writable mode.`);
     }
@@ -477,7 +508,15 @@ async function ensureVariableForCandidate(candidate, editedPath, selectedVariant
         node: null,
         variantSegments: candidate.variantSegments.filter((segment) => selectedVariantProperties.includes(segment.property))
     };
-    candidate.proposedPath = proposePath(collection.name, component, candidate.nodeName, candidate.property, selectedVariantProperties);
+    candidate.proposedPath = [
+        collection.name,
+        COMPONENT_SEGMENT,
+        component.componentName,
+        ...component.variantSegments.map((segment) => segment.value),
+        normalizeSegment((_d = segments[segments.length - 1]) !== null && _d !== void 0 ? _d : "")
+    ]
+        .map((segment) => normalizeSegment(segment))
+        .join("/");
     return variable;
 }
 async function bindVariableToNode(node, property, variable) {
@@ -587,6 +626,104 @@ function toVariableValue(rawValue, resolvedType) {
 }
 function numberOrZero(value) {
     return typeof value === "number" ? value : 0;
+}
+function getTokenLeaf(node, component, property) {
+    var _a;
+    const primaryAlias = normalizeSegment((_a = PROPERTY_ALIASES[property][0]) !== null && _a !== void 0 ? _a : property);
+    const layerSegment = normalizeSegment(node.name);
+    const groupedAlias = getGroupedAlias(node, property);
+    if (groupedAlias) {
+        return groupedAlias;
+    }
+    if (shouldUsePropertyAliasLeaf(node, component, property)) {
+        return primaryAlias;
+    }
+    return layerSegment || primaryAlias;
+}
+function getGroupedAlias(node, property) {
+    if (isPaddingProperty(property) &&
+        hasEqualNumericValues(node, "paddingTop", "paddingRight") &&
+        hasEqualNumericValues(node, "paddingTop", "paddingBottom") &&
+        hasEqualNumericValues(node, "paddingTop", "paddingLeft")) {
+        return "padding";
+    }
+    if (isHorizontalPaddingProperty(property) && hasEqualNumericValues(node, "paddingLeft", "paddingRight")) {
+        return "padding-horizontal";
+    }
+    if (isVerticalPaddingProperty(property) && hasEqualNumericValues(node, "paddingTop", "paddingBottom")) {
+        return "padding-vertical";
+    }
+    if (isRadiusProperty(property) &&
+        hasEqualNumericValues(node, "topLeftRadius", "topRightRadius") &&
+        hasEqualNumericValues(node, "topLeftRadius", "bottomLeftRadius") &&
+        hasEqualNumericValues(node, "topLeftRadius", "bottomRightRadius")) {
+        return "radius";
+    }
+    if (isHorizontalRadiusProperty(property) && hasEqualNumericValues(node, "topLeftRadius", "topRightRadius")) {
+        return "radius-top";
+    }
+    if (isHorizontalBottomRadiusProperty(property) && hasEqualNumericValues(node, "bottomLeftRadius", "bottomRightRadius")) {
+        return "radius-bottom";
+    }
+    return null;
+}
+function shouldUsePropertyAliasLeaf(node, component, property) {
+    if (node.id === component.node.id) {
+        return true;
+    }
+    if (looksLikeVariantNodeName(node.name)) {
+        return true;
+    }
+    return (property === "opacity" ||
+        property === "fills.opacity" ||
+        property === "paddingTop" ||
+        property === "paddingRight" ||
+        property === "paddingBottom" ||
+        property === "paddingLeft" ||
+        property === "itemSpacing" ||
+        property === "topLeftRadius" ||
+        property === "topRightRadius" ||
+        property === "bottomLeftRadius" ||
+        property === "bottomRightRadius") && !normalizeSegment(node.name);
+}
+function looksLikeVariantNodeName(value) {
+    return value.includes("=") && /[a-z]/i.test(value);
+}
+function hasEqualNumericValues(node, first, second) {
+    const firstValue = getNumericNodeValue(node, first);
+    const secondValue = getNumericNodeValue(node, second);
+    return firstValue !== null && secondValue !== null && Math.abs(firstValue - secondValue) < 0.0001;
+}
+function getNumericNodeValue(node, field) {
+    const value = node[field];
+    return typeof value === "number" ? value : null;
+}
+function isPaddingProperty(property) {
+    return (property === "paddingTop" ||
+        property === "paddingRight" ||
+        property === "paddingBottom" ||
+        property === "paddingLeft");
+}
+function isHorizontalPaddingProperty(property) {
+    return property === "paddingLeft" || property === "paddingRight";
+}
+function isVerticalPaddingProperty(property) {
+    return property === "paddingTop" || property === "paddingBottom";
+}
+function isRadiusProperty(property) {
+    return (property === "topLeftRadius" ||
+        property === "topRightRadius" ||
+        property === "bottomLeftRadius" ||
+        property === "bottomRightRadius");
+}
+function isHorizontalRadiusProperty(property) {
+    return property === "topLeftRadius" || property === "topRightRadius";
+}
+function isHorizontalBottomRadiusProperty(property) {
+    return property === "bottomLeftRadius" || property === "bottomRightRadius";
+}
+function isFullOpacity(value) {
+    return Math.abs(value - 1) < 0.0001 || Math.abs(value - 100) < 0.0001;
 }
 function formatError(error) {
     return error instanceof Error ? error.message : String(error);
