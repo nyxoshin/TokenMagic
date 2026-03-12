@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>TokenMagic</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #111318;
+        --panel: #1b1f27;
+        --panel-alt: #232936;
+        --text: #f5f7fb;
+        --muted: #aab3c5;
+        --accent: #7dd3a7;
+        --accent-strong: #48b67d;
+        --border: rgba(255, 255, 255, 0.09);
+        --danger: #ff8e8e;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font: 13px/1.4 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top right, rgba(125, 211, 167, 0.18), transparent 30%),
+          linear-gradient(180deg, #101318 0%, #0c0f14 100%);
+        color: var(--text);
+      }
+
+      .app {
+        padding: 16px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .hero,
+      .panel {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+        backdrop-filter: blur(8px);
+      }
+
+      .hero {
+        padding: 16px;
+      }
+
+      h1,
+      h2,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .subtle {
+        margin-top: 6px;
+        color: var(--muted);
+      }
+
+      .panel {
+        padding: 14px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .section-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 8px;
+      }
+
+      .section-title span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .row {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.03);
+        padding: 10px 12px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .row-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .row-head input[type="checkbox"] {
+        margin: 0;
+      }
+
+      .label {
+        font-weight: 600;
+      }
+
+      .path,
+      .raw {
+        color: var(--muted);
+        word-break: break-word;
+      }
+
+      input[type="text"] {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--panel-alt);
+        color: var(--text);
+        padding: 10px 12px;
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .chip {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 6px 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+      }
+
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 999px;
+        padding: 12px 16px;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .primary {
+        background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+        color: #092112;
+      }
+
+      .empty,
+      .summary {
+        color: var(--muted);
+      }
+
+      .errors {
+        display: grid;
+        gap: 8px;
+        color: var(--danger);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <section class="hero">
+        <h1>TokenMagic</h1>
+        <p id="selection-summary" class="subtle">Reading selection…</p>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <h2>Ready to bind</h2>
+          <span id="ready-count">0 items</span>
+        </div>
+        <div id="ready-list" class="list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <h2>Unmatched</h2>
+          <span id="unmatched-count">0 items</span>
+        </div>
+        <div id="unmatched-list" class="list"></div>
+      </section>
+
+      <section class="panel">
+        <div id="summary" class="summary">Waiting for selection.</div>
+        <div id="errors" class="errors"></div>
+        <div class="actions">
+          <button id="confirm" class="primary" type="button">Create variables and bind</button>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const state = {
+        ready: [],
+        unmatched: []
+      };
+
+      const readyList = document.getElementById("ready-list");
+      const unmatchedList = document.getElementById("unmatched-list");
+      const readyCount = document.getElementById("ready-count");
+      const unmatchedCount = document.getElementById("unmatched-count");
+      const summary = document.getElementById("summary");
+      const selectionSummary = document.getElementById("selection-summary");
+      const errors = document.getElementById("errors");
+      const confirmButton = document.getElementById("confirm");
+
+      window.onmessage = (event) => {
+        const message = event.data.pluginMessage;
+        if (!message) {
+          return;
+        }
+
+        if (message.type === "analysis") {
+          state.ready = message.ready;
+          state.unmatched = message.unmatched;
+          renderAnalysis(message);
+          return;
+        }
+
+        if (message.type === "summary") {
+          renderSummary(message);
+        }
+      };
+
+      confirmButton.addEventListener("click", () => {
+        parent.postMessage(
+          {
+            pluginMessage: {
+              type: "confirm-bind",
+              readyIds: state.ready.filter((item) => item.checked).map((item) => item.id),
+              unmatched: state.unmatched.map((item) => ({
+                id: item.id,
+                path: item.proposedPath,
+                skip: Boolean(item.skip),
+                variantProperties: item.selectedVariantProperties
+              }))
+            }
+          },
+          "*"
+        );
+      });
+
+      function renderAnalysis(message) {
+        selectionSummary.textContent = message.selectionSummary;
+        summary.textContent = message.skippedBound
+          ? `${message.skippedBound} properties were already bound and left unchanged.`
+          : "Review the bind queue, then confirm.";
+        errors.textContent = "";
+        renderReady();
+        renderUnmatched();
+      }
+
+      function renderReady() {
+        readyList.innerHTML = "";
+        readyCount.textContent = `${state.ready.length} item${state.ready.length === 1 ? "" : "s"}`;
+
+        if (!state.ready.length) {
+          readyList.innerHTML = '<div class="empty">No existing token matches were found.</div>';
+          return;
+        }
+
+        for (const item of state.ready) {
+          const row = document.createElement("label");
+          row.className = "row";
+          row.innerHTML = `
+            <div class="row-head">
+              <input type="checkbox" ${item.checked ? "checked" : ""} />
+              <div class="label">${escapeHtml(item.label)}</div>
+            </div>
+            <div class="path">${escapeHtml(item.path)}</div>
+          `;
+
+          const checkbox = row.querySelector("input");
+          checkbox.addEventListener("change", () => {
+            item.checked = checkbox.checked;
+          });
+          readyList.appendChild(row);
+        }
+      }
+
+      function renderUnmatched() {
+        unmatchedList.innerHTML = "";
+        unmatchedCount.textContent = `${state.unmatched.length} item${state.unmatched.length === 1 ? "" : "s"}`;
+
+        if (!state.unmatched.length) {
+          unmatchedList.innerHTML = '<div class="empty">Everything that can be matched is already queued.</div>';
+          return;
+        }
+
+        for (const item of state.unmatched) {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.innerHTML = `
+            <div class="label">${escapeHtml(item.label)}</div>
+            <div class="raw">Current value: ${escapeHtml(item.rawValue)}</div>
+            <input type="text" value="${escapeAttribute(item.proposedPath)}" />
+            <div class="chips"></div>
+            <label class="chip">
+              <input type="checkbox" ${item.skip ? "checked" : ""} />
+              <span>Skip</span>
+            </label>
+          `;
+
+          const pathInput = row.querySelector('input[type="text"]');
+          pathInput.addEventListener("input", () => {
+            item.proposedPath = pathInput.value;
+          });
+
+          const chips = row.querySelector(".chips");
+          for (const property of item.variantProperties) {
+            const chip = document.createElement("label");
+            chip.className = "chip";
+            chip.innerHTML = `
+              <input type="checkbox" ${item.selectedVariantProperties.includes(property) ? "checked" : ""} />
+              <span>${escapeHtml(property)}</span>
+            `;
+            const checkbox = chip.querySelector("input");
+            checkbox.addEventListener("change", () => {
+              if (checkbox.checked) {
+                if (!item.selectedVariantProperties.includes(property)) {
+                  item.selectedVariantProperties.push(property);
+                }
+              } else {
+                item.selectedVariantProperties = item.selectedVariantProperties.filter((value) => value !== property);
+              }
+            });
+            chips.appendChild(chip);
+          }
+
+          const skipCheckbox = row.querySelectorAll('input[type="checkbox"]')[item.variantProperties.length ? item.variantProperties.length + 1 : 1];
+          skipCheckbox.addEventListener("change", () => {
+            item.skip = skipCheckbox.checked;
+          });
+
+          unmatchedList.appendChild(row);
+        }
+      }
+
+      function renderSummary(message) {
+        summary.textContent = `${message.bound} bound successfully, ${message.skipped} skipped, ${message.errors.length} errors.`;
+        errors.innerHTML = "";
+
+        for (const error of message.errors) {
+          const row = document.createElement("div");
+          row.textContent = error;
+          errors.appendChild(row);
+        }
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function escapeAttribute(value) {
+        return escapeHtml(value).replaceAll("'", "&#39;");
+      }
+    </script>
+  </body>
+</html>
