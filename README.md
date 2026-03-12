@@ -1,33 +1,116 @@
 # TokenMagic
 
-TokenMagic is a Figma development plugin that scans selected components and component sets, matches them against local variables using a component-token naming convention, optionally creates missing variables from live node values, and then binds them in one pass.
+TokenMagic is a Figma development plugin that scans selected components and component sets, builds token chains for missing values, and binds variables back to the design.
 
-The plugin is built for a three-tier token structure:
+The plugin targets a three-level token architecture:
 
 `base -> semantic -> component`
 
-Every component token is expected to live under a path like:
+and splits variables into three collections:
 
-`{CollectionName}/component/{ComponentName}/{variantSegments}/{variableName}`
+- `colors`
+- `typography`
+- `device`
 
-Examples:
+Each collection is structured into:
 
-- `Semantic/component/button/hover/bg`
-- `Primitive/component/card/hover/large/border`
-- `Semantic/component/button/height`
+- `base`
+- `semantic`
+- `component`
 
 ## What It Does
 
 TokenMagic currently:
 
-- indexes all local variables whose path contains `/component/`
 - reads selected `COMPONENT` and `COMPONENT_SET` nodes
-- derives variant segments from Figma variant metadata and child names
-- scans bindable visual and layout properties
-- shows a pre-flight UI with matched and unmatched properties
-- creates missing variables from raw node values
-- binds created or matched variables back to nodes
-- hoists repeated identical values to a higher shared component family level when possible
+- derives variant segments from Figma metadata and variant names
+- scans supported color, typography, spacing, sizing, radius, stroke, and layout properties
+- matches existing variables by exact path
+- creates missing `base -> semantic -> component` chains
+- reuses existing variables only when type and value match exactly
+- binds the final component variable back to the Figma node
+- hoists repeated identical values higher in the component hierarchy when possible
+- supports creating missing base variables through a UI toggle
+
+## Collections
+
+### Colors
+
+Color tokens are generated into:
+
+- `colors/base`
+- `colors/semantic`
+- `colors/component`
+
+Examples:
+
+- `colors/base/color1/100`
+- `colors/base/color1/80`
+- `colors/base/color1/60`
+- `colors/semantic/bg/action/primary/default`
+- `colors/semantic/border/action/secondary/focus`
+- `colors/component/button/primary/default/bg`
+
+Rules:
+
+- base colors are numbered as `colorN`
+- the default opacity ladder is `100, 80, 60, 40, 20, 10, 0`
+- if any extra opacity step is needed, the plugin should add that step to every base color
+- semantic color naming is deeper than `bg/default` and is intended to express role plus domain, for example `bg/action/primary/default`
+- semantic color tokens alias base color tokens
+- component color tokens alias semantic color tokens
+
+### Typography
+
+Typography tokens are generated into:
+
+- `typography/base`
+- `typography/semantic`
+- `typography/component`
+
+Examples:
+
+- `typography/base/font-size/17`
+- `typography/base/font-family/tektur`
+- `typography/base/font-weight/600`
+- `typography/semantic/label/font-size`
+- `typography/component/button/label/font-size`
+
+### Device
+
+Layout and numeric device-style tokens are generated into:
+
+- `device/base`
+- `device/semantic`
+- `device/component`
+
+Examples:
+
+- `device/base/size/8`
+- `device/base/size/16`
+- `device/base/size/60`
+- `device/semantic/gap/8`
+- `device/semantic/radius/0`
+- `device/semantic/height/60`
+- `device/component/button/height`
+
+Rules:
+
+- `device/base` is a shared numeric size pool and should not be split by semantic category
+- semantic device variables alias shared base sizes
+- component device variables alias semantic device variables
+
+## Alias Chain
+
+When the plugin creates missing variables, it builds this chain:
+
+- `component -> semantic -> base`
+
+That means:
+
+- component variables are the ones bound to Figma nodes
+- semantic variables alias base variables
+- component variables alias semantic variables
 
 ## Current Property Coverage
 
@@ -46,36 +129,34 @@ The plugin currently scans and can create/bind tokens for:
 - font family
 - font weight
 
-Notes:
+## Important Rules
 
-- Full opacity is skipped. The plugin does not create a separate opacity variable for `100%`.
-- Fill alpha is stored inside the color token itself.
+- Full opacity is skipped as a standalone variable.
+- Fill alpha is stored inside the color token.
 - Width and height are skipped when the node uses `HUG` sizing on that axis.
 - Nested `INSTANCE` nodes are ignored.
 - Matching uses exact token paths only.
+- Existing variables are reused only when type and value match exactly.
+- If an existing variable path conflicts with the expected alias chain, the plugin surfaces a conflict instead of silently reusing the wrong variable.
 
 ## Shared Value Hoisting
 
-If related components share the same family prefix and the same property value, TokenMagic can hoist that variable to a higher level instead of duplicating it for each variant or subtype.
+If related components or variants share the same value for the same property, TokenMagic can hoist that token higher in the hierarchy instead of duplicating it.
 
-Example:
+Examples:
 
-- `button/primary/default`
-- `button/primary/hover`
-- `button/secondary/default`
-- `button/secondary/hover`
-
-If all four use `height = 60`, the plugin can propose:
-
-- `Semantic/component/button/height`
-
-instead of four separate per-variant height tokens.
+- shared across all button variants:
+  `device/component/button/height`
+- shared across secondary button variants only:
+  `device/component/button/secondary/stroke-weight`
+- shared across FAB variants only:
+  `device/component/button/fab/gap`
 
 ## Project structure
 
-- `src/code.ts` contains all Figma API access, matching logic, variable creation, and binding.
-- `src/ui.html` contains the full pre-flight UI and summary screen in vanilla JavaScript.
-- `dist/` is the compiled plugin output used by Figma after running the build.
+- `src/code.ts` contains all Figma API access, token generation, matching logic, variable creation, alias-chain creation, and binding.
+- `src/ui.html` contains the full plugin UI in vanilla JavaScript.
+- `dist/` contains the compiled plugin output used by Figma.
 - `manifest.json` points Figma at the built files and enables `documentAccess: "dynamic-page"`.
 
 ## Local development
@@ -91,20 +172,22 @@ instead of four separate per-variant height tokens.
 1. Select a component or a full component set in Figma.
 2. Run `TokenMagic` from the Development plugins list.
 3. Review the pre-flight panel:
-   - `Ready to bind` shows exact token matches
-   - `Unmatched` shows editable proposed paths for missing variables
-4. Confirm to create missing variables and bind them.
+   - `Ready to bind` shows exact existing matches
+   - `Unmatched` shows editable `base`, `semantic`, and `component` paths
+4. Choose whether the plugin is allowed to create missing base variables.
+5. Confirm to create missing variables and bind them.
 
-## Expected Naming Behavior
+## Settings Direction
 
-By default, TokenMagic tries to keep names practical:
+The current UI supports a base creation toggle. The intended direction is:
 
-- component root background -> `bg`
-- text-related fields on named layers -> `label/font-size`, `label/font-family`, `label/font-weight`
-- spacing values can collapse to shared names like `padding`, `padding-horizontal`, `padding-vertical`
-- shared values across related components can hoist to a family-level path like `button/height`
+- editable naming for generated token paths
+- conflict resolution UI only when a real chain conflict exists
+- deeper semantic naming for project-specific meaning when needed
 
-Variant path segments are derived from component-set metadata when available, with name-based fallbacks for cases such as:
+## Variant Handling
+
+Variant path segments are derived from component-set metadata when available, with name-based fallbacks for formats such as:
 
 - `State=Hover, Size=Large`
 - `Hover, Large`

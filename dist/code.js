@@ -66,6 +66,7 @@ async function analyzeSelection() {
     const variables = await figma.variables.getLocalVariablesAsync();
     const collectionById = new Map(collections.map((collection) => [collection.id, collection]));
     const variableIndex = buildVariableIndex(variables, collectionById);
+    seedBaseColorNames(variableIndex, collectionById);
     const preparedComponents = prepareSelection(figma.currentPage.selection);
     if (preparedComponents.length === 0) {
         return {
@@ -98,8 +99,11 @@ async function analyzeSelection() {
             .map((match) => ({
             id: match.id,
             label: `${match.nodeName} · ${match.property}`,
+            collectionKind: match.collectionKind,
             rawValue: rawValueToDisplay(match.rawValue),
-            proposedPath: match.proposedPath,
+            basePath: match.proposedBasePath,
+            semanticPath: match.proposedSemanticPath,
+            componentPath: match.proposedComponentPath,
             variantProperties: match.variantProperties,
             selectedVariantProperties: [...match.variantProperties]
         })),
@@ -112,11 +116,6 @@ function buildVariableIndex(variables, collectionById) {
     for (const variable of variables) {
         const collection = collectionById.get(variable.variableCollectionId);
         if (!collection) {
-            continue;
-        }
-        const fullPath = `${collection.name}/${variable.name}`;
-        const normalizedPath = normalizeTokenPath(fullPath);
-        if (!normalizedPath.includes(`/${COMPONENT_SEGMENT}/`)) {
             continue;
         }
         insertVariableIntoIndex(index, variable, collection);
@@ -268,11 +267,12 @@ function walkNodes(root) {
     return nodes;
 }
 async function inspectNodeBindings(node, component, variableIndex, sharedPropertyIndex) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a;
     const candidates = [];
     const bindables = extractBindableFields(node);
     for (const bindable of bindables) {
         const pathContext = getPathContext(node, component, bindable.property, bindable.rawValue, bindable.resolvedType, sharedPropertyIndex);
+        const proposedChain = buildProposedChain(pathContext, node, bindable.property, bindable.rawValue);
         const existingBinding = await getExistingBindingName(node, bindable.property);
         if (existingBinding) {
             candidates.push({
@@ -282,9 +282,11 @@ async function inspectNodeBindings(node, component, variableIndex, sharedPropert
                 property: bindable.property,
                 resolvedType: bindable.resolvedType,
                 rawValue: bindable.rawValue,
+                collectionKind: proposedChain.collectionKind,
                 matched: false,
-                proposedCollectionName: (_a = firstCollectionName(variableIndex)) !== null && _a !== void 0 ? _a : "Semantic",
-                proposedPath: "",
+                proposedBasePath: proposedChain.basePath,
+                proposedSemanticPath: proposedChain.semanticPath,
+                proposedComponentPath: proposedChain.componentPath,
                 candidatePaths: [],
                 variantSegments: component.variantSegments,
                 variantProperties: component.variantSegments.map((segment) => segment.property),
@@ -303,12 +305,14 @@ async function inspectNodeBindings(node, component, variableIndex, sharedPropert
             property: bindable.property,
             resolvedType: bindable.resolvedType,
             rawValue: bindable.rawValue,
+            collectionKind: proposedChain.collectionKind,
             matched: Boolean(match),
             matchedVariableId: match === null || match === void 0 ? void 0 : match.variable.id,
             matchedVariablePath: match === null || match === void 0 ? void 0 : match.variablePath,
-            proposedCollectionName: (_c = (_b = match === null || match === void 0 ? void 0 : match.collectionName) !== null && _b !== void 0 ? _b : firstCollectionName(variableIndex)) !== null && _c !== void 0 ? _c : "Semantic",
-            proposedPath: (_d = match === null || match === void 0 ? void 0 : match.variablePath) !== null && _d !== void 0 ? _d : proposePath((_e = firstCollectionName(variableIndex)) !== null && _e !== void 0 ? _e : "Semantic", pathContext, node, bindable.property),
-            candidatePaths: buildCandidatePaths((_f = firstCollectionName(variableIndex)) !== null && _f !== void 0 ? _f : "Semantic", pathContext, node, bindable.property),
+            proposedBasePath: proposedChain.basePath,
+            proposedSemanticPath: proposedChain.semanticPath,
+            proposedComponentPath: (_a = match === null || match === void 0 ? void 0 : match.variablePath) !== null && _a !== void 0 ? _a : proposedChain.componentPath,
+            candidatePaths: buildCandidatePaths(proposedChain.collectionKind, pathContext, node, bindable.property),
             variantSegments: component.variantSegments,
             variantProperties: component.variantSegments.map((segment) => segment.property),
             pathComponentName: pathContext.componentName,
@@ -432,75 +436,242 @@ function extractExistingBinding(node, property) {
     return null;
 }
 function findVariableMatch(node, property, pathContext, variableIndex) {
-    for (const collectionName of collectionNames(variableIndex)) {
-        const candidatePaths = buildCandidatePaths(collectionName, pathContext, node, property);
-        for (const candidatePath of candidatePaths) {
-            const exact = variableIndex.get(candidatePath);
-            if (exact === null || exact === void 0 ? void 0 : exact.length) {
-                return exact[0];
-            }
+    const candidatePaths = buildCandidatePaths(getCollectionKind(property), pathContext, node, property);
+    for (const candidatePath of candidatePaths) {
+        const exact = variableIndex.get(candidatePath);
+        if (exact === null || exact === void 0 ? void 0 : exact.length) {
+            return exact[0];
         }
     }
     return null;
 }
-function buildCandidatePaths(collectionName, pathContext, node, property) {
-    var _a;
-    const baseSegments = [
-        normalizeSegment(collectionName),
-        COMPONENT_SEGMENT,
-        normalizeSegment(pathContext.componentName),
-        ...pathContext.variantSegments.map((segment) => normalizeSegment(segment.value))
-    ];
-    const layerSegment = normalizeSegment(node.name);
-    const preferredLeaf = getTokenLeaf(node, {
-        node: null,
-        componentName: pathContext.componentName,
-        variantSegments: pathContext.variantSegments
-    }, property);
-    const leafs = new Set();
-    if (preferredLeaf) {
-        leafs.add(preferredLeaf);
-    }
-    if (layerSegment && layerSegment !== preferredLeaf) {
-        leafs.add(layerSegment);
-    }
-    const primaryAlias = normalizeSegment((_a = PROPERTY_ALIASES[property][0]) !== null && _a !== void 0 ? _a : property);
-    if (layerSegment && layerSegment !== primaryAlias) {
-        leafs.add(`${layerSegment}/${primaryAlias}`);
-    }
-    const candidates = [];
-    for (const leaf of leafs) {
-        if (!leaf) {
-            continue;
-        }
-        candidates.push(normalizeTokenPath([...baseSegments, leaf].join("/")));
-    }
-    return candidates;
+function buildCandidatePaths(collectionKind, pathContext, node, property) {
+    return [buildComponentPath(collectionKind, pathContext, node, property)];
 }
-function proposePath(collectionName, pathContext, node, property, allowedVariantProperties) {
-    const filteredSegments = allowedVariantProperties === undefined
-        ? pathContext.variantSegments
-        : pathContext.variantSegments.filter((segment) => allowedVariantProperties.includes(segment.property));
-    const lastSegment = getTokenLeaf(node, {
+function buildComponentPath(collectionKind, pathContext, node, property) {
+    const componentLeaf = getComponentLeaf(node, {
         node: null,
         componentName: pathContext.componentName,
         variantSegments: pathContext.variantSegments
     }, property);
     return [
-        collectionName,
+        collectionKind,
         COMPONENT_SEGMENT,
         pathContext.componentName,
-        ...filteredSegments.map((segment) => segment.value),
-        lastSegment
+        ...pathContext.variantSegments.map((segment) => segment.value),
+        componentLeaf
     ]
         .map((segment) => normalizeSegment(segment))
         .join("/");
+}
+function buildProposedChain(pathContext, node, property, rawValue) {
+    const collectionKind = getCollectionKind(property);
+    return {
+        collectionKind,
+        basePath: buildBasePath(collectionKind, property, rawValue),
+        semanticPath: buildSemanticPath(collectionKind, pathContext, node, property, rawValue),
+        componentPath: buildComponentPath(collectionKind, pathContext, node, property)
+    };
+}
+function buildSemanticPath(collectionKind, pathContext, node, property, rawValue) {
+    if (collectionKind === "colors") {
+        return [
+            "colors",
+            "semantic",
+            getSemanticColorRole(node, property),
+            getSemanticDomain(pathContext.componentName),
+            ...getSemanticSubtypeSegments(pathContext.componentName),
+            ...pathContext.variantSegments.map((segment) => segment.value)
+        ]
+            .map((segment) => normalizeSegment(segment))
+            .join("/");
+    }
+    if (collectionKind === "typography") {
+        return ["typography", "semantic", normalizeSegment(node.name) || "text", getTypographyLeaf(property)]
+            .map((segment) => normalizeSegment(segment))
+            .join("/");
+    }
+    return ["device", "semantic", getDeviceBucket(property), formatNumberish(rawValue)]
+        .map((segment) => normalizeSegment(segment))
+        .join("/");
+}
+function buildScopedSemanticPath(collectionKind, pathContext, node, property, rawValue) {
+    if (collectionKind === "colors") {
+        return [
+            "colors",
+            "semantic",
+            getSemanticColorRole(node, property),
+            getSemanticDomain(pathContext.componentName),
+            ...getSemanticSubtypeSegments(pathContext.componentName),
+            ...pathContext.variantSegments.map((segment) => segment.value)
+        ]
+            .map((segment) => normalizeSegment(segment))
+            .join("/");
+    }
+    if (collectionKind === "typography") {
+        return ["typography", "semantic", pathContext.componentName, normalizeSegment(node.name) || "text", getTypographyLeaf(property)]
+            .map((segment) => normalizeSegment(segment))
+            .join("/");
+    }
+    return ["device", "semantic", pathContext.componentName, getDeviceBucket(property), formatNumberish(rawValue)]
+        .map((segment) => normalizeSegment(segment))
+        .join("/");
+}
+function buildBasePath(collectionKind, property, rawValue) {
+    if (collectionKind === "colors") {
+        const color = rawValue;
+        return ["colors", "base", getBaseColorName(color), String(colorAlphaPercent(color))]
+            .map((segment) => normalizeSegment(segment))
+            .join("/");
+    }
+    if (collectionKind === "typography") {
+        return ["typography", "base", getTypographyLeaf(property), formatNumberish(rawValue)]
+            .map((segment) => normalizeSegment(segment))
+            .join("/");
+    }
+    return ["device", "base", "size", formatNumberish(rawValue)]
+        .map((segment) => normalizeSegment(segment))
+        .join("/");
+}
+function getCollectionKind(property) {
+    if (property === "fills.color" || property === "strokes.color") {
+        return "colors";
+    }
+    if (property === "fontSize" || property === "fontFamily" || property === "fontWeight") {
+        return "typography";
+    }
+    return "device";
+}
+function getComponentLeaf(node, component, property) {
+    var _a;
+    const collectionKind = getCollectionKind(property);
+    if (collectionKind === "colors") {
+        return getTokenLeaf(node, component, property);
+    }
+    if (collectionKind === "typography") {
+        return `${normalizeSegment(node.name) || "text"}/${getTypographyLeaf(property)}`;
+    }
+    const groupedAlias = getGroupedAlias(node, property);
+    if (groupedAlias) {
+        return groupedAlias;
+    }
+    if (shouldUsePropertyAliasLeaf(node, component, property)) {
+        return normalizeSegment((_a = PROPERTY_ALIASES[property][0]) !== null && _a !== void 0 ? _a : property);
+    }
+    const nodeName = normalizeSegment(node.name);
+    const bucket = getDeviceBucket(property);
+    return nodeName && component.node && node.id !== component.node.id ? `${nodeName}/${bucket}` : bucket;
+}
+function getSemanticColorRole(node, property) {
+    if (property === "strokes.color") {
+        return "border";
+    }
+    const nodeName = normalizeSegment(node.name);
+    if (nodeName && !looksLikeVariantNodeName(node.name)) {
+        return nodeName;
+    }
+    return "bg";
+}
+function getSemanticDomain(componentName) {
+    var _a;
+    const family = normalizeSegment((_a = componentName.split("/")[0]) !== null && _a !== void 0 ? _a : componentName);
+    if (family === "button") {
+        return "action";
+    }
+    return family || "surface";
+}
+function getSemanticSubtypeSegments(componentName) {
+    const segments = componentName.split("/").map((segment) => normalizeSegment(segment)).filter(Boolean);
+    return segments.slice(1);
+}
+function getTypographyLeaf(property) {
+    if (property === "fontSize") {
+        return "font-size";
+    }
+    if (property === "fontFamily") {
+        return "font-family";
+    }
+    return "font-weight";
+}
+function getDeviceBucket(property) {
+    var _a;
+    switch (property) {
+        case "itemSpacing":
+            return "gap";
+        case "paddingTop":
+        case "paddingRight":
+        case "paddingBottom":
+        case "paddingLeft":
+            return "spacing";
+        case "topLeftRadius":
+        case "topRightRadius":
+        case "bottomLeftRadius":
+        case "bottomRightRadius":
+            return "radius";
+        case "strokeWeight":
+            return "stroke";
+        case "width":
+            return "width";
+        case "height":
+            return "height";
+        case "opacity":
+            return "opacity";
+        default:
+            return normalizeSegment((_a = PROPERTY_ALIASES[property][0]) !== null && _a !== void 0 ? _a : property);
+    }
+}
+function formatNumberish(rawValue) {
+    if (typeof rawValue === "number") {
+        return String(rawValue);
+    }
+    if (typeof rawValue === "string") {
+        return rawValue;
+    }
+    if (typeof rawValue === "object" && "family" in rawValue && "style" in rawValue) {
+        return normalizeSegment(rawValue.family);
+    }
+    return rawValueToDisplay(rawValue);
+}
+function colorAlphaPercent(color) {
+    const alpha = "a" in color ? color.a : 1;
+    return Math.round(alpha * 100);
+}
+const baseColorNames = new Map();
+function getBaseColorName(color) {
+    const rgbKey = rgbaToHex({ r: color.r, g: color.g, b: color.b });
+    const existing = baseColorNames.get(rgbKey);
+    if (existing) {
+        return existing;
+    }
+    const next = `color${baseColorNames.size + 1}`;
+    baseColorNames.set(rgbKey, next);
+    return next;
+}
+function seedBaseColorNames(variableIndex, collectionById) {
+    var _a;
+    baseColorNames.clear();
+    for (const entry of [...variableIndex.values()].flat()) {
+        const parts = entry.normalizedPath.split("/");
+        if (parts[0] !== "colors" || parts[1] !== "base" || !((_a = parts[2]) === null || _a === void 0 ? void 0 : _a.startsWith("color"))) {
+            continue;
+        }
+        const collection = collectionById.get(entry.collectionId);
+        if (!collection) {
+            continue;
+        }
+        const modeId = getDefaultModeId(collection);
+        const value = entry.variable.valuesByMode[modeId];
+        if (value && typeof value === "object" && "r" in value && "g" in value && "b" in value) {
+            baseColorNames.set(rgbaToHex({ r: value.r, g: value.g, b: value.b }), parts[2]);
+        }
+    }
 }
 async function executeBindings(message) {
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
     const variables = await figma.variables.getLocalVariablesAsync();
     const collectionById = new Map(collections.map((collection) => [collection.id, collection]));
     const variableIndex = buildVariableIndex(variables, collectionById);
+    seedBaseColorNames(variableIndex, collectionById);
     let bound = 0;
     let skipped = 0;
     const errors = [];
@@ -537,7 +708,13 @@ async function executeBindings(message) {
             if (!node) {
                 throw new Error(`Missing node ${candidate.nodeName}`);
             }
-            const variable = await ensureVariableForCandidate(candidate, unmatched.path, unmatched.variantProperties, collections, variableIndex);
+            const variable = await ensureVariableForCandidate(candidate, {
+                createBaseVariables: message.createBaseVariables,
+                basePath: unmatched.basePath,
+                semanticPath: unmatched.semanticPath,
+                componentPath: unmatched.componentPath,
+                variantProperties: unmatched.variantProperties
+            }, collections, variableIndex);
             await bindVariableToNode(node, candidate.property, variable);
             bound += 1;
         }
@@ -552,46 +729,233 @@ async function executeBindings(message) {
         errors
     };
 }
-async function ensureVariableForCandidate(candidate, editedPath, selectedVariantProperties, collections, variableIndex) {
-    var _a, _b, _c, _d;
-    const normalizedEditedPath = normalizeTokenPath(editedPath);
-    const existing = (_a = variableIndex.get(normalizedEditedPath)) === null || _a === void 0 ? void 0 : _a[0];
-    if (existing) {
-        return existing.variable;
+async function ensureVariableForCandidate(candidate, options, collections, variableIndex) {
+    const selectedVariantSegments = candidate.pathVariantSegments.filter((segment) => options.variantProperties.includes(segment.property));
+    const pathContext = {
+        componentName: candidate.pathComponentName,
+        variantSegments: selectedVariantSegments
+    };
+    const componentPath = normalizeTokenPath(options.componentPath || buildComponentPath(candidate.collectionKind, pathContext, {
+        id: candidate.nodeId,
+        name: candidate.nodeName
+    }, candidate.property));
+    const semanticPath = normalizeTokenPath(options.semanticPath || buildSemanticPath(candidate.collectionKind, pathContext, {
+        id: candidate.nodeId,
+        name: candidate.nodeName
+    }, candidate.property, candidate.rawValue));
+    const basePath = normalizeTokenPath(options.basePath || buildBasePath(candidate.collectionKind, candidate.property, candidate.rawValue));
+    let baseVariable = null;
+    if (options.createBaseVariables) {
+        baseVariable = await ensureChainVariable(basePath, candidate, collections, variableIndex, {
+            kind: "base",
+            rawValue: candidate.rawValue
+        });
+        await ensureGlobalColorBaseLadder(candidate, collections, variableIndex);
     }
-    const segments = normalizedEditedPath.split("/").filter(Boolean);
-    if (segments.length < 4 || segments[1] !== COMPONENT_SEGMENT) {
-        throw new Error("Variable path must follow {CollectionName}/component/{ComponentName}/.../{variableName}");
+    let resolvedSemanticPath = semanticPath;
+    let semanticVariable;
+    try {
+        semanticVariable = await ensureChainVariable(semanticPath, candidate, collections, variableIndex, {
+            kind: "semantic",
+            rawValue: candidate.rawValue,
+            aliasTarget: baseVariable
+        });
     }
-    const collectionName = segments[0];
-    const variableName = segments.slice(1).join("/");
-    let collection = collections.find((item) => normalizeSegment(item.name) === normalizeSegment(collectionName));
-    if (!collection) {
-        collection = figma.variables.createVariableCollection(collectionName);
-        collections.push(collection);
+    catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith("Conflict at")) {
+            throw error;
+        }
+        resolvedSemanticPath = buildScopedSemanticPath(candidate.collectionKind, pathContext, {
+            id: candidate.nodeId,
+            name: candidate.nodeName
+        }, candidate.property, candidate.rawValue);
+        semanticVariable = await ensureChainVariable(resolvedSemanticPath, candidate, collections, variableIndex, {
+            kind: "semantic",
+            rawValue: candidate.rawValue,
+            aliasTarget: baseVariable
+        });
     }
-    const variable = figma.variables.createVariable(variableName, collection, candidate.resolvedType);
+    const componentVariable = await ensureChainVariable(componentPath, candidate, collections, variableIndex, {
+        kind: "component",
+        rawValue: candidate.rawValue,
+        aliasTarget: semanticVariable
+    });
+    candidate.proposedBasePath = basePath;
+    candidate.proposedSemanticPath = resolvedSemanticPath;
+    candidate.proposedComponentPath = componentPath;
+    return componentVariable;
+}
+async function ensureChainVariable(fullPath, candidate, collections, variableIndex, options) {
+    var _a;
+    const normalizedPath = normalizeTokenPath(fullPath);
+    const existingByPath = (_a = variableIndex.get(normalizedPath)) === null || _a === void 0 ? void 0 : _a[0];
+    if (existingByPath) {
+        validateExistingVariableFit(existingByPath.variable, candidate, collections, options);
+        return existingByPath.variable;
+    }
+    const segments = normalizedPath.split("/").filter(Boolean);
+    if (segments.length < 3) {
+        throw new Error(`Invalid variable path: ${fullPath}`);
+    }
+    const collection = getOrCreateCollection(collections, segments[0]);
+    if (options.kind === "base") {
+        const reused = findBaseVariableByExactValue(collection.name, candidate.resolvedType, options.rawValue, collection, variableIndex);
+        if (reused) {
+            insertVariableIntoIndex(variableIndex, reused, collection);
+            return reused;
+        }
+    }
+    const variable = figma.variables.createVariable(segments.slice(1).join("/"), collection, candidate.resolvedType);
     insertVariableIntoIndex(variableIndex, variable, collection);
-    const modeId = (_b = collection.defaultModeId) !== null && _b !== void 0 ? _b : (_c = collection.modes[0]) === null || _c === void 0 ? void 0 : _c.modeId;
+    const modeId = getDefaultModeId(collection);
+    if (options.aliasTarget) {
+        variable.setValueForMode(modeId, figma.variables.createVariableAlias(options.aliasTarget));
+    }
+    else {
+        variable.setValueForMode(modeId, toVariableValue(options.rawValue, candidate.resolvedType));
+    }
+    return variable;
+}
+function validateExistingVariableFit(variable, candidate, collections, options) {
+    const collection = collections.find((item) => item.id === variable.variableCollectionId);
+    if (!collection) {
+        return;
+    }
+    const modeId = getDefaultModeId(collection);
+    const currentValue = variable.valuesByMode[modeId];
+    if (options.aliasTarget) {
+        if (!currentValue || typeof currentValue !== "object" || !("id" in currentValue) || currentValue.id !== options.aliasTarget.id) {
+            throw new Error(`Conflict at ${collection.name}/${variable.name}: existing alias does not match expected chain`);
+        }
+        return;
+    }
+    if (getComparableVariableValue(currentValue, candidate.resolvedType) !==
+        getComparableVariableValue(options.rawValue, candidate.resolvedType)) {
+        throw new Error(`Conflict at ${collection.name}/${variable.name}: existing value does not match new value`);
+    }
+}
+function getOrCreateCollection(collections, collectionName) {
+    const existing = collections.find((collection) => normalizeSegment(collection.name) === normalizeSegment(collectionName));
+    if (existing) {
+        return existing;
+    }
+    const created = figma.variables.createVariableCollection(collectionName);
+    collections.push(created);
+    return created;
+}
+function getDefaultModeId(collection) {
+    var _a, _b;
+    const modeId = (_a = collection.defaultModeId) !== null && _a !== void 0 ? _a : (_b = collection.modes[0]) === null || _b === void 0 ? void 0 : _b.modeId;
     if (!modeId) {
         throw new Error(`Collection ${collection.name} has no writable mode.`);
     }
-    variable.setValueForMode(modeId, toVariableValue(candidate.rawValue, candidate.resolvedType));
-    const component = {
-        componentName: candidate.pathComponentName,
-        node: null,
-        variantSegments: candidate.pathVariantSegments.filter((segment) => selectedVariantProperties.includes(segment.property))
+    return modeId;
+}
+function findBaseVariableByExactValue(collectionName, resolvedType, rawValue, collection, variableIndex) {
+    const expectedPrefix = `${normalizeSegment(collectionName)}/base/`;
+    const expectedValue = getComparableVariableValue(rawValue, resolvedType);
+    for (const entry of [...variableIndex.values()].flat()) {
+        if (normalizeSegment(entry.collectionName) !== normalizeSegment(collectionName)) {
+            continue;
+        }
+        if (!entry.normalizedPath.startsWith(expectedPrefix)) {
+            continue;
+        }
+        if (entry.variable.resolvedType !== resolvedType) {
+            continue;
+        }
+        const modeId = getDefaultModeId(collection);
+        const currentValue = entry.variable.valuesByMode[modeId];
+        if (getComparableVariableValue(currentValue, resolvedType) === expectedValue) {
+            return entry.variable;
+        }
+    }
+    return null;
+}
+function getComparableVariableValue(rawValue, resolvedType) {
+    if (resolvedType === "COLOR") {
+        return rgbaToHex(rawValue);
+    }
+    if (typeof rawValue === "number") {
+        return String(rawValue);
+    }
+    if (typeof rawValue === "string") {
+        return rawValue;
+    }
+    if (typeof rawValue === "object" && "family" in rawValue && "style" in rawValue) {
+        return `${rawValue.family}/${rawValue.style}`;
+    }
+    return JSON.stringify(rawValue);
+}
+async function ensureGlobalColorBaseLadder(candidate, collections, variableIndex) {
+    var _a;
+    if (candidate.collectionKind !== "colors") {
+        return;
+    }
+    const ladder = collectBaseColorAlphaLadder(variableIndex);
+    ladder.add(colorAlphaPercent(candidate.rawValue));
+    const colorEntries = collectBaseColorEntries(variableIndex);
+    for (const [colorName, rgbHex] of colorEntries.entries()) {
+        const rgb = hexToRgb(rgbHex);
+        for (const alpha of ladder) {
+            const ladderPath = ["colors", "base", colorName, String(alpha)]
+                .map((segment) => normalizeSegment(segment))
+                .join("/");
+            if ((_a = variableIndex.get(ladderPath)) === null || _a === void 0 ? void 0 : _a.length) {
+                continue;
+            }
+            const colorValue = {
+                r: rgb.r,
+                g: rgb.g,
+                b: rgb.b,
+                a: alpha / 100
+            };
+            await ensureChainVariable(ladderPath, candidate, collections, variableIndex, {
+                kind: "base",
+                rawValue: colorValue
+            });
+        }
+    }
+}
+function collectBaseColorAlphaLadder(variableIndex) {
+    const ladder = new Set([100, 80, 60, 40, 20, 10, 0]);
+    for (const entry of [...variableIndex.values()].flat()) {
+        const parts = entry.normalizedPath.split("/");
+        if (parts[0] !== "colors" || parts[1] !== "base" || !parts[3]) {
+            continue;
+        }
+        const alpha = Number(parts[3]);
+        if (!Number.isNaN(alpha)) {
+            ladder.add(alpha);
+        }
+    }
+    return ladder;
+}
+function collectBaseColorEntries(variableIndex) {
+    const entries = new Map();
+    for (const entry of [...variableIndex.values()].flat()) {
+        const parts = entry.normalizedPath.split("/");
+        if (parts[0] !== "colors" || parts[1] !== "base" || !parts[2]) {
+            continue;
+        }
+        const firstModeValue = Object.values(entry.variable.valuesByMode)[0];
+        const value = firstModeValue;
+        if (value && typeof value === "object" && "r" in value && "g" in value && "b" in value) {
+            entries.set(parts[2], rgbaToHex({ r: value.r, g: value.g, b: value.b }));
+        }
+    }
+    for (const [rgbHex, colorName] of baseColorNames.entries()) {
+        entries.set(colorName, rgbHex);
+    }
+    return entries;
+}
+function hexToRgb(hex) {
+    const clean = hex.replace("#", "").slice(0, 6);
+    return {
+        r: parseInt(clean.slice(0, 2), 16) / 255,
+        g: parseInt(clean.slice(2, 4), 16) / 255,
+        b: parseInt(clean.slice(4, 6), 16) / 255
     };
-    candidate.proposedPath = [
-        collection.name,
-        COMPONENT_SEGMENT,
-        component.componentName,
-        ...component.variantSegments.map((segment) => segment.value),
-        normalizeSegment((_d = segments[segments.length - 1]) !== null && _d !== void 0 ? _d : "")
-    ]
-        .map((segment) => normalizeSegment(segment))
-        .join("/");
-    return variable;
 }
 function buildSharedPropertyIndex(components) {
     var _a, _b, _c;
@@ -600,7 +964,7 @@ function buildSharedPropertyIndex(components) {
         for (const node of walkNodes(component.node)) {
             const bindables = extractBindableFields(node);
             for (const bindable of bindables) {
-                const leaf = getTokenLeaf(node, component, bindable.property);
+                const leaf = getSharedLeaf(node, component, bindable.property);
                 const key = `${leaf}|${bindable.property}`;
                 const componentValues = (_a = observations.get(key)) !== null && _a !== void 0 ? _a : new Map();
                 const observation = (_b = componentValues.get(component.componentName)) !== null && _b !== void 0 ? _b : {
@@ -644,7 +1008,7 @@ function buildSharedPropertyIndex(components) {
     return sharedIndex;
 }
 function getPathContext(node, component, property, rawValue, resolvedType, sharedPropertyIndex) {
-    const leaf = getTokenLeaf(node, component, property);
+    const leaf = getSharedLeaf(node, component, property);
     const sharedKey = `${leaf}|${property}`;
     const sharedComponentName = sharedPropertyIndex.get(sharedKey);
     if (sharedComponentName &&
@@ -659,6 +1023,11 @@ function getPathContext(node, component, property, rawValue, resolvedType, share
         componentName: component.componentName,
         variantSegments: component.variantSegments
     };
+}
+function getSharedLeaf(node, component, property) {
+    return getCollectionKind(property) === "device"
+        ? getComponentLeaf(node, component, property)
+        : getTokenLeaf(node, component, property);
 }
 function getComparableRawValue(rawValue, resolvedType) {
     if (resolvedType === "COLOR") {

@@ -197,6 +197,16 @@
       </section>
 
       <section class="panel">
+        <div class="section-title">
+          <h2>Settings</h2>
+        </div>
+        <label class="chip">
+          <input id="create-base-toggle" type="checkbox" checked />
+          <span>Create missing base variables</span>
+        </label>
+      </section>
+
+      <section class="panel">
         <div id="summary" class="summary">Waiting for selection.</div>
         <div id="errors" class="errors"></div>
         <div class="actions">
@@ -219,6 +229,7 @@
       const selectionSummary = document.getElementById("selection-summary");
       const errors = document.getElementById("errors");
       const confirmButton = document.getElementById("confirm");
+      const createBaseToggle = document.getElementById("create-base-toggle");
 
       window.onmessage = (event) => {
         const message = event.data.pluginMessage;
@@ -244,9 +255,12 @@
             pluginMessage: {
               type: "confirm-bind",
               readyIds: state.ready.filter((item) => item.checked).map((item) => item.id),
+              createBaseVariables: createBaseToggle.checked,
               unmatched: state.unmatched.map((item) => ({
                 id: item.id,
-                path: item.proposedPath,
+                basePath: item.basePath,
+                semanticPath: item.semanticPath,
+                componentPath: item.componentPath,
                 skip: Boolean(item.skip),
                 variantProperties: item.selectedVariantProperties
               }))
@@ -308,8 +322,11 @@
           row.className = "row";
           row.innerHTML = `
             <div class="label">${escapeHtml(item.label)}</div>
+            <div class="path">Collection: ${escapeHtml(item.collectionKind)}</div>
             <div class="raw">Current value: ${escapeHtml(item.rawValue)}</div>
-            <input type="text" value="${escapeAttribute(item.proposedPath)}" />
+            <input type="text" data-field="base" value="${escapeAttribute(item.basePath)}" />
+            <input type="text" data-field="semantic" value="${escapeAttribute(item.semanticPath)}" />
+            <input type="text" data-field="component" value="${escapeAttribute(item.componentPath)}" />
             <div class="chips"></div>
             <label class="chip">
               <input type="checkbox" ${item.skip ? "checked" : ""} />
@@ -317,9 +334,17 @@
             </label>
           `;
 
-          const pathInput = row.querySelector('input[type="text"]');
-          pathInput.addEventListener("input", () => {
-            item.proposedPath = pathInput.value;
+          const baseInput = row.querySelector('input[data-field="base"]');
+          const semanticInput = row.querySelector('input[data-field="semantic"]');
+          const componentInput = row.querySelector('input[data-field="component"]');
+          baseInput.addEventListener("input", () => {
+            item.basePath = baseInput.value;
+          });
+          semanticInput.addEventListener("input", () => {
+            item.semanticPath = semanticInput.value;
+          });
+          componentInput.addEventListener("input", () => {
+            item.componentPath = componentInput.value;
           });
 
           const chips = row.querySelector(".chips");
