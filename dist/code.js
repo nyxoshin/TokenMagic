@@ -331,12 +331,14 @@ function extractBindableFields(node) {
         const stroke = anyNode.strokes.find((paint) => paint.type === "SOLID");
         if (stroke) {
             items.push({ property: "strokes.color", rawValue: solidPaintToRgba(stroke), resolvedType: "COLOR" });
+            if (typeof anyNode.strokeWeight === "number") {
+                items.push({ property: "strokeWeight", rawValue: anyNode.strokeWeight, resolvedType: "FLOAT" });
+            }
         }
     }
     const numericFields = [
         "width",
         "height",
-        "strokeWeight",
         "opacity",
         "topLeftRadius",
         "topRightRadius",
@@ -592,37 +594,64 @@ async function ensureVariableForCandidate(candidate, editedPath, selectedVariant
     return variable;
 }
 function buildSharedPropertyIndex(components) {
-    var _a, _b;
+    var _a, _b, _c;
     const observations = new Map();
-    const counts = new Map();
     for (const component of components) {
-        const familyName = getComponentFamilyName(component.componentName);
-        if (!familyName) {
-            continue;
-        }
         for (const node of walkNodes(component.node)) {
             const bindables = extractBindableFields(node);
             for (const bindable of bindables) {
                 const leaf = getTokenLeaf(node, component, bindable.property);
-                const key = `${normalizeSegment(familyName)}|${leaf}|${bindable.property}`;
-                const values = (_a = observations.get(key)) !== null && _a !== void 0 ? _a : new Set();
-                values.add(getComparableRawValue(bindable.rawValue, bindable.resolvedType));
-                observations.set(key, values);
-                counts.set(key, ((_b = counts.get(key)) !== null && _b !== void 0 ? _b : 0) + 1);
+                const key = `${leaf}|${bindable.property}`;
+                const componentValues = (_a = observations.get(key)) !== null && _a !== void 0 ? _a : new Map();
+                const observation = (_b = componentValues.get(component.componentName)) !== null && _b !== void 0 ? _b : {
+                    values: new Set(),
+                    count: 0
+                };
+                observation.values.add(getComparableRawValue(bindable.rawValue, bindable.resolvedType));
+                observation.count += 1;
+                componentValues.set(component.componentName, observation);
+                observations.set(key, componentValues);
             }
         }
     }
-    return new Set([...observations.entries()]
-        .filter(([key, values]) => { var _a; return values.size === 1 && ((_a = counts.get(key)) !== null && _a !== void 0 ? _a : 0) > 1; })
-        .map(([key]) => key));
+    const sharedIndex = new Map();
+    for (const [key, componentValues] of observations.entries()) {
+        const componentsByValue = new Map();
+        for (const [componentName, observation] of componentValues.entries()) {
+            if (observation.values.size !== 1) {
+                continue;
+            }
+            const [value] = [...observation.values];
+            const names = (_c = componentsByValue.get(value)) !== null && _c !== void 0 ? _c : [];
+            names.push(componentName);
+            componentsByValue.set(value, names);
+        }
+        for (const [value, componentNames] of componentsByValue.entries()) {
+            const repeatedWithinOneComponent = componentNames.some((componentName) => {
+                const observation = componentValues.get(componentName);
+                return observation ? observation.count > 1 && observation.values.has(value) : false;
+            });
+            if (componentNames.length < 2 && !repeatedWithinOneComponent) {
+                continue;
+            }
+            const commonPrefix = findCommonComponentPrefix(componentNames);
+            if (!commonPrefix) {
+                continue;
+            }
+            sharedIndex.set(key, commonPrefix);
+        }
+    }
+    return sharedIndex;
 }
 function getPathContext(node, component, property, rawValue, resolvedType, sharedPropertyIndex) {
-    const familyName = getComponentFamilyName(component.componentName);
     const leaf = getTokenLeaf(node, component, property);
-    const sharedKey = `${normalizeSegment(familyName)}|${leaf}|${property}`;
-    if (familyName && sharedPropertyIndex.has(sharedKey)) {
+    const sharedKey = `${leaf}|${property}`;
+    const sharedComponentName = sharedPropertyIndex.get(sharedKey);
+    if (sharedComponentName &&
+        isComponentWithinSharedPrefix(component.componentName, sharedComponentName) &&
+        hasMatchingSharedValue(component, node, property, rawValue, resolvedType, sharedComponentName)) {
         return {
-            componentName: familyName,
+            componentName: sharedComponentName,
             variantSegments: []
         };
     }
@@ -630,10 +659,6 @@ function getPathContext(node, component, property, rawValue, resolvedType, share
         componentName: component.componentName,
         variantSegments: component.variantSegments
     };
-}
-function getComponentFamilyName(componentName) {
-    const [familyName] = componentName.split("/").map((part) => part.trim()).filter(Boolean);
-    return familyName || componentName;
 }
 function getComparableRawValue(rawValue, resolvedType) {
     if (resolvedType === "COLOR") {
@@ -649,6 +674,33 @@ function getComparableRawValue(rawValue, resolvedType) {
         return `${rawValue.family}/${rawValue.style}`;
     }
     return JSON.stringify(rawValue);
+}
+function findCommonComponentPrefix(componentNames) {
+    if (componentNames.length === 0) {
+        return "";
+    }
+    const splitNames = componentNames.map((name) => name.split("/").map((part) => part.trim()).filter(Boolean));
+    const first = splitNames[0];
+    const sharedParts = [];
+    for (let index = 0; index < first.length; index += 1) {
+        const part = first[index];
+        if (splitNames.every((segments) => segments[index] === part)) {
+            sharedParts.push(part);
+            continue;
+        }
+        break;
+    }
+    return sharedParts.join("/");
+}
+function isComponentWithinSharedPrefix(componentName, sharedPrefix) {
+    if (!sharedPrefix) {
+        return false;
+    }
+    return componentName === sharedPrefix || componentName.startsWith(`${sharedPrefix}/`);
+}
+function hasMatchingSharedValue(component, node, property, rawValue, resolvedType, sharedComponentName) {
+    return isComponentWithinSharedPrefix(component.componentName, sharedComponentName) &&
+        getComparableRawValue(rawValue, resolvedType).length > 0;
 }
 async function bindVariableToNode(node, property, variable) {
     if (property === "fills.color") {

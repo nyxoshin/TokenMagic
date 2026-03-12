@@ -74,6 +74,12 @@ type PathContext = {
   variantSegments: VariantSegment[];
 };
 
+type SharedPropertyIndex = Map<string, string>;
+type SharedObservation = {
+  values: Set<string>;
+  count: number;
+};
+
 type UISelectionItem = {
   id: string;
   label: string;
@@ -437,7 +443,7 @@ async function inspectNodeBindings(
   node: SceneNode,
   component: PreparedComponent,
   variableIndex: Map<string, VariableLookupEntry[]>,
-  sharedPropertyIndex: Set<string>
+  sharedPropertyIndex: SharedPropertyIndex
 ): Promise<MatchCandidate[]> {
   const candidates: MatchCandidate[] = [];
   const bindables = extractBindableFields(node);
@@ -509,13 +515,15 @@ function extractBindableFields(
     const stroke = (anyNode.strokes as Paint[]).find((paint) => paint.type === "SOLID") as SolidPaint | undefined;
     if (stroke) {
       items.push({ property: "strokes.color", rawValue: solidPaintToRgba(stroke), resolvedType: "COLOR" });
+      if (typeof anyNode.strokeWeight === "number") {
+        items.push({ property: "strokeWeight", rawValue: anyNode.strokeWeight as number, resolvedType: "FLOAT" });
+      }
     }
   }
 
   const numericFields: BindableProperty[] = [
     "width",
     "height",
-    "strokeWeight",
     "opacity",
     "topLeftRadius",
     "topRightRadius",
@@ -837,34 +845,63 @@ async function ensureVariableForCandidate(
   return variable;
 }
 
-function buildSharedPropertyIndex(components: PreparedComponent[]): Set<string> {
-  const observations = new Map<string, Set<string>>();
-  const counts = new Map<string, number>();
+function buildSharedPropertyIndex(components: PreparedComponent[]): SharedPropertyIndex {
+  const observations = new Map<string, Map<string, SharedObservation>>();
 
   for (const component of components) {
-    const familyName = getComponentFamilyName(component.componentName);
-    if (!familyName) {
-      continue;
-    }
-
     for (const node of walkNodes(component.node)) {
       const bindables = extractBindableFields(node);
       for (const bindable of bindables) {
         const leaf = getTokenLeaf(node, component, bindable.property);
-        const key = `${normalizeSegment(familyName)}|${leaf}|${bindable.property}`;
-        const values = observations.get(key) ?? new Set<string>();
-        values.add(getComparableRawValue(bindable.rawValue, bindable.resolvedType));
-        observations.set(key, values);
-        counts.set(key, (counts.get(key) ?? 0) + 1);
+        const key = `${leaf}|${bindable.property}`;
+        const componentValues = observations.get(key) ?? new Map<string, SharedObservation>();
+        const observation = componentValues.get(component.componentName) ?? {
+          values: new Set<string>(),
+          count: 0
+        };
+        observation.values.add(getComparableRawValue(bindable.rawValue, bindable.resolvedType));
+        observation.count += 1;
+        componentValues.set(component.componentName, observation);
+        observations.set(key, componentValues);
       }
     }
   }
 
-  return new Set(
-    [...observations.entries()]
-      .filter(([key, values]) => values.size === 1 && (counts.get(key) ?? 0) > 1)
-      .map(([key]) => key)
-  );
+  const sharedIndex: SharedPropertyIndex = new Map();
+
+  for (const [key, componentValues] of observations.entries()) {
+    const componentsByValue = new Map<string, string[]>();
+
+    for (const [componentName, observation] of componentValues.entries()) {
+      if (observation.values.size !== 1) {
+        continue;
+      }
+      const [value] = [...observation.values];
+      const names = componentsByValue.get(value) ?? [];
+      names.push(componentName);
+      componentsByValue.set(value, names);
+    }
+
+    for (const [value, componentNames] of componentsByValue.entries()) {
+      const repeatedWithinOneComponent = componentNames.some((componentName) => {
+        const observation = componentValues.get(componentName);
+        return observation ? observation.count > 1 && observation.values.has(value) : false;
+      });
+
+      if (componentNames.length < 2 && !repeatedWithinOneComponent) {
+        continue;
+      }
+
+      const commonPrefix = findCommonComponentPrefix(componentNames);
+      if (!commonPrefix) {
+        continue;
+      }
+
+      sharedIndex.set(key, commonPrefix);
+    }
+  }
+
+  return sharedIndex;
 }
 
 function getPathContext(
@@ -873,15 +910,19 @@ function getPathContext(
   property: BindableProperty,
   rawValue: RawValue,
   resolvedType: VariableResolvedDataType,
-  sharedPropertyIndex: Set<string>
+  sharedPropertyIndex: SharedPropertyIndex
 ): PathContext {
-  const familyName = getComponentFamilyName(component.componentName);
   const leaf = getTokenLeaf(node, component, property);
-  const sharedKey = `${normalizeSegment(familyName)}|${leaf}|${property}`;
+  const sharedKey = `${leaf}|${property}`;
+  const sharedComponentName = sharedPropertyIndex.get(sharedKey);
 
-  if (familyName && sharedPropertyIndex.has(sharedKey)) {
+  if (
+    sharedComponentName &&
+    isComponentWithinSharedPrefix(component.componentName, sharedComponentName) &&
+    hasMatchingSharedValue(component, node, property, rawValue, resolvedType, sharedComponentName)
+  ) {
     return {
-      componentName: familyName,
+      componentName: sharedComponentName,
       variantSegments: []
     };
   }
@@ -890,11 +931,6 @@ function getPathContext(
     componentName: component.componentName,
     variantSegments: component.variantSegments
   };
-}
-
-function getComponentFamilyName(componentName: string): string {
-  const [familyName] = componentName.split("/").map((part) => part.trim()).filter(Boolean);
-  return familyName || componentName;
 }
 
 function getComparableRawValue(rawValue: RawValue, resolvedType: VariableResolvedDataType): string {
@@ -911,6 +947,47 @@ function getComparableRawValue(rawValue: RawValue, resolvedType: VariableResolve
     return `${rawValue.family}/${rawValue.style}`;
   }
   return JSON.stringify(rawValue);
+}
+
+function findCommonComponentPrefix(componentNames: string[]): string {
+  if (componentNames.length === 0) {
+    return "";
+  }
+
+  const splitNames = componentNames.map((name) => name.split("/").map((part) => part.trim()).filter(Boolean));
+  const first = splitNames[0];
+  const sharedParts: string[] = [];
+
+  for (let index = 0; index < first.length; index += 1) {
+    const part = first[index];
+    if (splitNames.every((segments) => segments[index] === part)) {
+      sharedParts.push(part);
+      continue;
+    }
+    break;
+  }
+
+  return sharedParts.join("/");
+}
+
+function isComponentWithinSharedPrefix(componentName: string, sharedPrefix: string): boolean {
+  if (!sharedPrefix) {
+    return false;
+  }
+
+  return componentName === sharedPrefix || componentName.startsWith(`${sharedPrefix}/`);
+}
+
+function hasMatchingSharedValue(
+  component: PreparedComponent,
+  node: SceneNode,
+  property: BindableProperty,
+  rawValue: RawValue,
+  resolvedType: VariableResolvedDataType,
+  sharedComponentName: string
+): boolean {
+  return isComponentWithinSharedPrefix(component.componentName, sharedComponentName) &&
+    getComparableRawValue(rawValue, resolvedType).length > 0;
 }
 
 async function bindVariableToNode(node: SceneNode, property: BindableProperty, variable: Variable): Promise<void> {
