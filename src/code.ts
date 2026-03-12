@@ -14,9 +14,11 @@ type VariantSegment = {
 
 type BindableProperty =
   | "fills.color"
-  | "fills.opacity"
   | "strokes.color"
+  | "strokeWeight"
   | "opacity"
+  | "width"
+  | "height"
   | "topLeftRadius"
   | "topRightRadius"
   | "bottomLeftRadius"
@@ -27,7 +29,7 @@ type BindableProperty =
   | "paddingLeft"
   | "itemSpacing"
   | "fontSize"
-  | "fontName"
+  | "fontFamily"
   | "fontWeight";
 
 type RawValue =
@@ -55,12 +57,19 @@ type MatchCandidate = {
   candidatePaths: string[];
   variantSegments: VariantSegment[];
   variantProperties: string[];
+  pathComponentName: string;
+  pathVariantSegments: VariantSegment[];
   skippedBecauseBound: boolean;
   existingBindingName?: string;
 };
 
 type PreparedComponent = {
   node: ComponentNode;
+  componentName: string;
+  variantSegments: VariantSegment[];
+};
+
+type PathContext = {
   componentName: string;
   variantSegments: VariantSegment[];
 };
@@ -113,9 +122,11 @@ const COMPONENT_SEGMENT = "component";
 const MATCHABLE_NODE_TYPES = new Set<NodeType>(["COMPONENT", "COMPONENT_SET"]);
 const PROPERTY_ALIASES: Record<BindableProperty, string[]> = {
   "fills.color": ["bg", "fill", "color", "background"],
-  "fills.opacity": ["fill-opacity", "opacity"],
   "strokes.color": ["border", "stroke", "stroke-color"],
+  strokeWeight: ["stroke-weight", "border-width"],
   opacity: ["opacity"],
+  width: ["width"],
+  height: ["height"],
   topLeftRadius: ["top-left-radius", "radius", "border-radius"],
   topRightRadius: ["top-right-radius", "radius", "border-radius"],
   bottomLeftRadius: ["bottom-left-radius", "radius", "border-radius"],
@@ -126,7 +137,7 @@ const PROPERTY_ALIASES: Record<BindableProperty, string[]> = {
   paddingLeft: ["padding-left", "padding"],
   itemSpacing: ["gap", "item-spacing", "spacing"],
   fontSize: ["font-size", "text-size"],
-  fontName: ["font-name", "font-family", "font-style"],
+  fontFamily: ["font-family"],
   fontWeight: ["font-weight"]
 };
 
@@ -282,7 +293,7 @@ function prepareSelection(selection: readonly SceneNode[]): PreparedComponent[] 
         prepared.push({
           node: child,
           componentName: node.name,
-          variantSegments: parseVariantSegments(child.name)
+          variantSegments: extractVariantSegments(child, node)
         });
       }
       continue;
@@ -291,7 +302,7 @@ function prepareSelection(selection: readonly SceneNode[]): PreparedComponent[] 
     const componentNode = node as ComponentNode;
     const parent = componentNode.parent;
     const variantSegments =
-      parent && parent.type === "COMPONENT_SET" ? parseVariantSegments(componentNode.name) : [];
+      parent && parent.type === "COMPONENT_SET" ? extractVariantSegments(componentNode, parent) : [];
     const componentName = parent && parent.type === "COMPONENT_SET" ? parent.name : componentNode.name;
 
     prepared.push({
@@ -302,6 +313,75 @@ function prepareSelection(selection: readonly SceneNode[]): PreparedComponent[] 
   }
 
   return prepared;
+}
+
+function extractVariantSegments(componentNode: ComponentNode, componentSet?: ComponentSetNode): VariantSegment[] {
+  const variantProperties = componentNode.variantProperties;
+  if (variantProperties) {
+    const segments = Object.entries(variantProperties).map(([property, value]) => ({
+      property,
+      value
+    }));
+    if (segments.length > 0) {
+      return segments;
+    }
+  }
+
+  const parsed = parseVariantSegments(componentNode.name);
+  if (parsed.length > 0) {
+    return parsed;
+  }
+
+  const variantPropertyNames = getVariantPropertyNames(componentSet);
+
+  if (componentSet) {
+    const rawParts = componentNode.name
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    if (rawParts.length === variantPropertyNames.length && rawParts.every((part) => !part.includes("="))) {
+      return rawParts.map((value, index) => ({
+        property: variantPropertyNames[index],
+        value
+      }));
+    }
+  }
+
+  if (variantPropertyNames.length === 1) {
+    return [
+      {
+        property: variantPropertyNames[0],
+        value: componentNode.name
+      }
+    ];
+  }
+
+  if (componentSet) {
+    return [
+      {
+        property: "variant",
+        value: componentNode.name
+      }
+    ];
+  }
+
+  return [];
+}
+
+function getVariantPropertyNames(componentSet?: ComponentSetNode): string[] {
+  if (!componentSet) {
+    return [];
+  }
+
+  const groupPropertyNames = Object.keys(componentSet.variantGroupProperties ?? {});
+  if (groupPropertyNames.length > 0) {
+    return groupPropertyNames;
+  }
+
+  return Object.entries(componentSet.componentPropertyDefinitions)
+    .filter(([, definition]) => definition.type === "VARIANT")
+    .map(([propertyName]) => propertyName);
 }
 
 function parseVariantSegments(variantName: string): VariantSegment[] {
@@ -321,11 +401,12 @@ async function collectMatches(
   variableIndex: Map<string, VariableLookupEntry[]>
 ): Promise<MatchCandidate[]> {
   const matches: MatchCandidate[] = [];
+  const sharedPropertyIndex = buildSharedPropertyIndex(components);
 
   for (const component of components) {
     const nodes = walkNodes(component.node);
     for (const node of nodes) {
-      const bindables = await inspectNodeBindings(node, component, variableIndex);
+      const bindables = await inspectNodeBindings(node, component, variableIndex, sharedPropertyIndex);
       matches.push(...bindables);
     }
   }
@@ -355,12 +436,14 @@ function walkNodes(root: SceneNode): SceneNode[] {
 async function inspectNodeBindings(
   node: SceneNode,
   component: PreparedComponent,
-  variableIndex: Map<string, VariableLookupEntry[]>
+  variableIndex: Map<string, VariableLookupEntry[]>,
+  sharedPropertyIndex: Set<string>
 ): Promise<MatchCandidate[]> {
   const candidates: MatchCandidate[] = [];
   const bindables = extractBindableFields(node);
 
   for (const bindable of bindables) {
+    const pathContext = getPathContext(node, component, bindable.property, bindable.rawValue, bindable.resolvedType, sharedPropertyIndex);
     const existingBinding = await getExistingBindingName(node, bindable.property);
     if (existingBinding) {
       candidates.push({
@@ -376,13 +459,15 @@ async function inspectNodeBindings(
         candidatePaths: [],
         variantSegments: component.variantSegments,
         variantProperties: component.variantSegments.map((segment) => segment.property),
+        pathComponentName: pathContext.componentName,
+        pathVariantSegments: pathContext.variantSegments,
         skippedBecauseBound: true,
         existingBindingName: existingBinding
       });
       continue;
     }
 
-    const match = findVariableMatch(node, bindable.property, component, variableIndex);
+    const match = findVariableMatch(node, bindable.property, pathContext, variableIndex);
     candidates.push({
       id: `${node.id}:${bindable.property}`,
       nodeId: node.id,
@@ -394,10 +479,12 @@ async function inspectNodeBindings(
       matchedVariableId: match?.variable.id,
       matchedVariablePath: match?.variablePath,
       proposedCollectionName: match?.collectionName ?? firstCollectionName(variableIndex) ?? "Semantic",
-      proposedPath: match?.variablePath ?? proposePath(firstCollectionName(variableIndex) ?? "Semantic", component, node, bindable.property),
-      candidatePaths: buildCandidatePaths(firstCollectionName(variableIndex) ?? "Semantic", component, node, bindable.property),
+      proposedPath: match?.variablePath ?? proposePath(firstCollectionName(variableIndex) ?? "Semantic", pathContext, node, bindable.property),
+      candidatePaths: buildCandidatePaths(firstCollectionName(variableIndex) ?? "Semantic", pathContext, node, bindable.property),
       variantSegments: component.variantSegments,
       variantProperties: component.variantSegments.map((segment) => segment.property),
+      pathComponentName: pathContext.componentName,
+      pathVariantSegments: pathContext.variantSegments,
       skippedBecauseBound: false
     });
   }
@@ -414,22 +501,21 @@ function extractBindableFields(
   if ("fills" in anyNode && Array.isArray(anyNode.fills)) {
     const fill = (anyNode.fills as Paint[]).find((paint) => paint.type === "SOLID") as SolidPaint | undefined;
     if (fill) {
-      items.push({ property: "fills.color", rawValue: fill.color, resolvedType: "COLOR" });
-      const fillOpacity = fill.opacity ?? 1;
-      if (!isFullOpacity(fillOpacity)) {
-        items.push({ property: "fills.opacity", rawValue: fillOpacity, resolvedType: "FLOAT" });
-      }
+      items.push({ property: "fills.color", rawValue: solidPaintToRgba(fill), resolvedType: "COLOR" });
     }
   }
 
   if ("strokes" in anyNode && Array.isArray(anyNode.strokes)) {
     const stroke = (anyNode.strokes as Paint[]).find((paint) => paint.type === "SOLID") as SolidPaint | undefined;
     if (stroke) {
-      items.push({ property: "strokes.color", rawValue: stroke.color, resolvedType: "COLOR" });
+      items.push({ property: "strokes.color", rawValue: solidPaintToRgba(stroke), resolvedType: "COLOR" });
     }
   }
 
   const numericFields: BindableProperty[] = [
+    "width",
+    "height",
+    "strokeWeight",
     "opacity",
     "topLeftRadius",
     "topRightRadius",
@@ -444,6 +530,12 @@ function extractBindableFields(
 
   for (const field of numericFields) {
     if (typeof anyNode[field] === "number") {
+      if (field === "width" && isHugDimension(node, "horizontal")) {
+        continue;
+      }
+      if (field === "height" && isHugDimension(node, "vertical")) {
+        continue;
+      }
       if (field === "opacity" && isFullOpacity(anyNode[field] as number)) {
         continue;
       }
@@ -457,8 +549,8 @@ function extractBindableFields(
       if (node.fontName !== figma.mixed) {
         const fontName = node.fontName as FontName;
         items.push({
-          property: "fontName",
-          rawValue: { family: fontName.family, style: fontName.style },
+          property: "fontFamily",
+          rawValue: fontName.family,
           resolvedType: "STRING"
         });
       }
@@ -493,7 +585,7 @@ function extractExistingBinding(
     return null;
   }
 
-  if (property === "fills.color" || property === "fills.opacity") {
+  if (property === "fills.color") {
     const paints = bound.fills;
     if (Array.isArray(paints)) {
       for (const entry of paints) {
@@ -501,9 +593,8 @@ function extractExistingBinding(
           continue;
         }
         const paintBinding = entry as unknown as Record<string, VariableAlias | undefined>;
-        const key = property === "fills.color" ? "color" : "opacity";
-        if (paintBinding[key]) {
-          return paintBinding[key] as VariableAlias;
+        if (paintBinding.color) {
+          return paintBinding.color as VariableAlias;
         }
       }
     }
@@ -536,22 +627,15 @@ function extractExistingBinding(
 function findVariableMatch(
   node: SceneNode,
   property: BindableProperty,
-  component: PreparedComponent,
+  pathContext: PathContext,
   variableIndex: Map<string, VariableLookupEntry[]>
 ): VariableLookupEntry | null {
   for (const collectionName of collectionNames(variableIndex)) {
-    const candidatePaths = buildCandidatePaths(collectionName, component, node, property);
+    const candidatePaths = buildCandidatePaths(collectionName, pathContext, node, property);
     for (const candidatePath of candidatePaths) {
       const exact = variableIndex.get(candidatePath);
       if (exact?.length) {
         return exact[0];
-      }
-    }
-
-    for (const candidatePath of candidatePaths) {
-      const fuzzy = [...variableIndex.values()].flat().find((entry) => entry.normalizedPath.includes(candidatePath));
-      if (fuzzy) {
-        return fuzzy;
       }
     }
   }
@@ -561,19 +645,23 @@ function findVariableMatch(
 
 function buildCandidatePaths(
   collectionName: string,
-  component: PreparedComponent,
+  pathContext: PathContext,
   node: SceneNode,
   property: BindableProperty
 ): string[] {
   const baseSegments = [
     normalizeSegment(collectionName),
     COMPONENT_SEGMENT,
-    normalizeSegment(component.componentName),
-    ...component.variantSegments.map((segment) => normalizeSegment(segment.value))
+    normalizeSegment(pathContext.componentName),
+    ...pathContext.variantSegments.map((segment) => normalizeSegment(segment.value))
   ];
 
   const layerSegment = normalizeSegment(node.name);
-  const preferredLeaf = getTokenLeaf(node, component, property);
+  const preferredLeaf = getTokenLeaf(node, {
+    node: null as unknown as ComponentNode,
+    componentName: pathContext.componentName,
+    variantSegments: pathContext.variantSegments
+  }, property);
   const leafs = new Set<string>();
 
   if (preferredLeaf) {
@@ -602,21 +690,25 @@ function buildCandidatePaths(
 
 function proposePath(
   collectionName: string,
-  component: PreparedComponent,
+  pathContext: PathContext,
   node: SceneNode,
   property: BindableProperty,
   allowedVariantProperties?: string[]
 ): string {
   const filteredSegments =
     allowedVariantProperties === undefined
-      ? component.variantSegments
-      : component.variantSegments.filter((segment) => allowedVariantProperties.includes(segment.property));
+      ? pathContext.variantSegments
+      : pathContext.variantSegments.filter((segment) => allowedVariantProperties.includes(segment.property));
 
-  const lastSegment = getTokenLeaf(node, component, property);
+  const lastSegment = getTokenLeaf(node, {
+    node: null as unknown as ComponentNode,
+    componentName: pathContext.componentName,
+    variantSegments: pathContext.variantSegments
+  }, property);
   return [
     collectionName,
     COMPONENT_SEGMENT,
-    component.componentName,
+    pathContext.componentName,
     ...filteredSegments.map((segment) => segment.value),
     lastSegment
   ]
@@ -726,9 +818,9 @@ async function ensureVariableForCandidate(
   variable.setValueForMode(modeId, toVariableValue(candidate.rawValue, candidate.resolvedType));
 
   const component = {
-    componentName: segments[2],
+    componentName: candidate.pathComponentName,
     node: null as unknown as ComponentNode,
-    variantSegments: candidate.variantSegments.filter((segment) =>
+    variantSegments: candidate.pathVariantSegments.filter((segment) =>
       selectedVariantProperties.includes(segment.property)
     )
   };
@@ -745,8 +837,84 @@ async function ensureVariableForCandidate(
   return variable;
 }
 
+function buildSharedPropertyIndex(components: PreparedComponent[]): Set<string> {
+  const observations = new Map<string, Set<string>>();
+  const counts = new Map<string, number>();
+
+  for (const component of components) {
+    const familyName = getComponentFamilyName(component.componentName);
+    if (!familyName) {
+      continue;
+    }
+
+    for (const node of walkNodes(component.node)) {
+      const bindables = extractBindableFields(node);
+      for (const bindable of bindables) {
+        const leaf = getTokenLeaf(node, component, bindable.property);
+        const key = `${normalizeSegment(familyName)}|${leaf}|${bindable.property}`;
+        const values = observations.get(key) ?? new Set<string>();
+        values.add(getComparableRawValue(bindable.rawValue, bindable.resolvedType));
+        observations.set(key, values);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+  }
+
+  return new Set(
+    [...observations.entries()]
+      .filter(([key, values]) => values.size === 1 && (counts.get(key) ?? 0) > 1)
+      .map(([key]) => key)
+  );
+}
+
+function getPathContext(
+  node: SceneNode,
+  component: PreparedComponent,
+  property: BindableProperty,
+  rawValue: RawValue,
+  resolvedType: VariableResolvedDataType,
+  sharedPropertyIndex: Set<string>
+): PathContext {
+  const familyName = getComponentFamilyName(component.componentName);
+  const leaf = getTokenLeaf(node, component, property);
+  const sharedKey = `${normalizeSegment(familyName)}|${leaf}|${property}`;
+
+  if (familyName && sharedPropertyIndex.has(sharedKey)) {
+    return {
+      componentName: familyName,
+      variantSegments: []
+    };
+  }
+
+  return {
+    componentName: component.componentName,
+    variantSegments: component.variantSegments
+  };
+}
+
+function getComponentFamilyName(componentName: string): string {
+  const [familyName] = componentName.split("/").map((part) => part.trim()).filter(Boolean);
+  return familyName || componentName;
+}
+
+function getComparableRawValue(rawValue: RawValue, resolvedType: VariableResolvedDataType): string {
+  if (resolvedType === "COLOR") {
+    return rgbaToHex(rawValue as RGBA | RGB);
+  }
+  if (typeof rawValue === "number") {
+    return String(rawValue);
+  }
+  if (typeof rawValue === "string") {
+    return rawValue;
+  }
+  if (typeof rawValue === "object" && "family" in rawValue && "style" in rawValue) {
+    return `${rawValue.family}/${rawValue.style}`;
+  }
+  return JSON.stringify(rawValue);
+}
+
 async function bindVariableToNode(node: SceneNode, property: BindableProperty, variable: Variable): Promise<void> {
-  if (property === "fills.color" || property === "fills.opacity") {
+  if (property === "fills.color") {
     if (!("fills" in node) || !Array.isArray(node.fills)) {
       throw new Error("Node does not support fill binding.");
     }
@@ -757,12 +925,7 @@ async function bindVariableToNode(node: SceneNode, property: BindableProperty, v
       throw new Error("No solid fill available to bind.");
     }
 
-    const field = property === "fills.color" ? "color" : "opacity";
-    paints[index] = (figma.variables.setBoundVariableForPaint as unknown as (
-      paint: SolidPaint,
-      field: "color" | "opacity",
-      variable: Variable
-    ) => SolidPaint)(paints[index] as SolidPaint, field, variable);
+    paints[index] = figma.variables.setBoundVariableForPaint(paints[index] as SolidPaint, "color", variable);
     (node as GeometryMixin).fills = paints;
     return;
   }
@@ -783,9 +946,14 @@ async function bindVariableToNode(node: SceneNode, property: BindableProperty, v
     return;
   }
 
-  if (node.type === "TEXT" && (property === "fontSize" || property === "fontName" || property === "fontWeight")) {
+  if (node.type === "TEXT" && (property === "fontSize" || property === "fontFamily" || property === "fontWeight")) {
     const textNode = node as TextNode & {
-      setRangeBoundVariable?: (start: number, end: number, field: string, variable: Variable) => void;
+      setRangeBoundVariable?: (
+        start: number,
+        end: number,
+        field: "fontFamily" | "fontSize" | "fontWeight",
+        variable: Variable
+      ) => void;
     };
     if (textNode.characters.length === 0) {
       throw new Error("Empty text nodes cannot be bound.");
@@ -853,6 +1021,15 @@ function rgbaToHex(color: RGBA | RGB): string {
   return `#${red}${green}${blue}${alpha}`.toUpperCase();
 }
 
+function solidPaintToRgba(paint: SolidPaint): RGBA {
+  return {
+    r: paint.color.r,
+    g: paint.color.g,
+    b: paint.color.b,
+    a: paint.opacity ?? 1
+  };
+}
+
 function toVariableValue(rawValue: RawValue, resolvedType: VariableResolvedDataType): VariableValue {
   if (resolvedType === "COLOR") {
     if (typeof rawValue === "object" && "r" in rawValue && "g" in rawValue && "b" in rawValue) {
@@ -895,6 +1072,10 @@ function getTokenLeaf(node: SceneNode, component: PreparedComponent, property: B
 
   if (shouldUsePropertyAliasLeaf(node, component, property)) {
     return primaryAlias;
+  }
+
+  if (shouldUseLayerAndPropertyLeaf(property, layerSegment)) {
+    return `${layerSegment}/${primaryAlias}`;
   }
 
   return layerSegment || primaryAlias;
@@ -943,7 +1124,7 @@ function shouldUsePropertyAliasLeaf(
   component: PreparedComponent,
   property: BindableProperty
 ): boolean {
-  if (node.id === component.node.id) {
+  if (component.node && node.id === component.node.id) {
     return true;
   }
 
@@ -953,7 +1134,6 @@ function shouldUsePropertyAliasLeaf(
 
   return (
     property === "opacity" ||
-    property === "fills.opacity" ||
     property === "paddingTop" ||
     property === "paddingRight" ||
     property === "paddingBottom" ||
@@ -964,6 +1144,32 @@ function shouldUsePropertyAliasLeaf(
     property === "bottomLeftRadius" ||
     property === "bottomRightRadius"
   ) && !normalizeSegment(node.name);
+}
+
+function shouldUseLayerAndPropertyLeaf(property: BindableProperty, layerSegment: string): boolean {
+  if (!layerSegment) {
+    return false;
+  }
+
+  return (
+    property === "strokes.color" ||
+    property === "strokeWeight" ||
+    property === "opacity" ||
+    property === "width" ||
+    property === "height" ||
+    property === "fontSize" ||
+    property === "fontFamily" ||
+    property === "fontWeight" ||
+    property === "paddingTop" ||
+    property === "paddingRight" ||
+    property === "paddingBottom" ||
+    property === "paddingLeft" ||
+    property === "itemSpacing" ||
+    property === "topLeftRadius" ||
+    property === "topRightRadius" ||
+    property === "bottomLeftRadius" ||
+    property === "bottomRightRadius"
+  );
 }
 
 function looksLikeVariantNodeName(value: string): boolean {
@@ -979,6 +1185,11 @@ function hasEqualNumericValues(node: SceneNode, first: string, second: string): 
 function getNumericNodeValue(node: SceneNode, field: string): number | null {
   const value = (node as SceneNode & Record<string, unknown>)[field];
   return typeof value === "number" ? value : null;
+}
+
+function isHugDimension(node: SceneNode, axis: "horizontal" | "vertical"): boolean {
+  const field = axis === "horizontal" ? "layoutSizingHorizontal" : "layoutSizingVertical";
+  return (node as SceneNode & Record<string, unknown>)[field] === "HUG";
 }
 
 function isPaddingProperty(property: BindableProperty): boolean {

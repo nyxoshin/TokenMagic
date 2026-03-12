@@ -5,9 +5,11 @@ const COMPONENT_SEGMENT = "component";
 const MATCHABLE_NODE_TYPES = new Set(["COMPONENT", "COMPONENT_SET"]);
 const PROPERTY_ALIASES = {
     "fills.color": ["bg", "fill", "color", "background"],
-    "fills.opacity": ["fill-opacity", "opacity"],
     "strokes.color": ["border", "stroke", "stroke-color"],
+    strokeWeight: ["stroke-weight", "border-width"],
     opacity: ["opacity"],
+    width: ["width"],
+    height: ["height"],
     topLeftRadius: ["top-left-radius", "radius", "border-radius"],
     topRightRadius: ["top-right-radius", "radius", "border-radius"],
     bottomLeftRadius: ["bottom-left-radius", "radius", "border-radius"],
@@ -18,7 +20,7 @@ const PROPERTY_ALIASES = {
     paddingLeft: ["padding-left", "padding"],
     itemSpacing: ["gap", "item-spacing", "spacing"],
     fontSize: ["font-size", "text-size"],
-    fontName: ["font-name", "font-family", "font-style"],
+    fontFamily: ["font-family"],
     fontWeight: ["font-weight"]
 };
 const analysisState = new Map();
@@ -151,14 +153,14 @@ function prepareSelection(selection) {
                 prepared.push({
                     node: child,
                     componentName: node.name,
-                    variantSegments: parseVariantSegments(child.name)
+                    variantSegments: extractVariantSegments(child, node)
                 });
             }
             continue;
         }
         const componentNode = node;
         const parent = componentNode.parent;
-        const variantSegments = parent && parent.type === "COMPONENT_SET" ? parseVariantSegments(componentNode.name) : [];
+        const variantSegments = parent && parent.type === "COMPONENT_SET" ? extractVariantSegments(componentNode, parent) : [];
         const componentName = parent && parent.type === "COMPONENT_SET" ? parent.name : componentNode.name;
         prepared.push({
             node: componentNode,
@@ -167,6 +169,65 @@ function prepareSelection(selection) {
         });
     }
     return prepared;
+}
+function extractVariantSegments(componentNode, componentSet) {
+    const variantProperties = componentNode.variantProperties;
+    if (variantProperties) {
+        const segments = Object.entries(variantProperties).map(([property, value]) => ({
+            property,
+            value
+        }));
+        if (segments.length > 0) {
+            return segments;
+        }
+    }
+    const parsed = parseVariantSegments(componentNode.name);
+    if (parsed.length > 0) {
+        return parsed;
+    }
+    const variantPropertyNames = getVariantPropertyNames(componentSet);
+    if (componentSet) {
+        const rawParts = componentNode.name
+            .split(",")
+            .map((part) => part.trim())
+            .filter(Boolean);
+        if (rawParts.length === variantPropertyNames.length && rawParts.every((part) => !part.includes("="))) {
+            return rawParts.map((value, index) => ({
+                property: variantPropertyNames[index],
+                value
+            }));
+        }
+    }
+    if (variantPropertyNames.length === 1) {
+        return [
+            {
+                property: variantPropertyNames[0],
+                value: componentNode.name
+            }
+        ];
+    }
+    if (componentSet) {
+        return [
+            {
+                property: "variant",
+                value: componentNode.name
+            }
+        ];
+    }
+    return [];
+}
+function getVariantPropertyNames(componentSet) {
+    var _a;
+    if (!componentSet) {
+        return [];
+    }
+    const groupPropertyNames = Object.keys((_a = componentSet.variantGroupProperties) !== null && _a !== void 0 ? _a : {});
+    if (groupPropertyNames.length > 0) {
+        return groupPropertyNames;
+    }
+    return Object.entries(componentSet.componentPropertyDefinitions)
+        .filter(([, definition]) => definition.type === "VARIANT")
+        .map(([propertyName]) => propertyName);
 }
 function parseVariantSegments(variantName) {
     return variantName
@@ -181,10 +242,11 @@ function parseVariantSegments(variantName) {
 }
 async function collectMatches(components, variableIndex) {
     const matches = [];
+    const sharedPropertyIndex = buildSharedPropertyIndex(components);
     for (const component of components) {
         const nodes = walkNodes(component.node);
         for (const node of nodes) {
-            const bindables = await inspectNodeBindings(node, component, variableIndex);
+            const bindables = await inspectNodeBindings(node, component, variableIndex, sharedPropertyIndex);
             matches.push(...bindables);
         }
     }
@@ -205,11 +267,12 @@ function walkNodes(root) {
     }
     return nodes;
 }
-async function inspectNodeBindings(node, component, variableIndex) {
+async function inspectNodeBindings(node, component, variableIndex, sharedPropertyIndex) {
     var _a, _b, _c, _d, _e, _f;
     const candidates = [];
     const bindables = extractBindableFields(node);
     for (const bindable of bindables) {
+        const pathContext = getPathContext(node, component, bindable.property, bindable.rawValue, bindable.resolvedType, sharedPropertyIndex);
         const existingBinding = await getExistingBindingName(node, bindable.property);
         if (existingBinding) {
             candidates.push({
@@ -225,12 +288,14 @@ async function inspectNodeBindings(node, component, variableIndex) {
                 candidatePaths: [],
                 variantSegments: component.variantSegments,
                 variantProperties: component.variantSegments.map((segment) => segment.property),
+                pathComponentName: pathContext.componentName,
+                pathVariantSegments: pathContext.variantSegments,
                 skippedBecauseBound: true,
                 existingBindingName: existingBinding
             });
             continue;
         }
-        const match = findVariableMatch(node, bindable.property, component, variableIndex);
+        const match = findVariableMatch(node, bindable.property, pathContext, variableIndex);
         candidates.push({
             id: `${node.id}:${bindable.property}`,
             nodeId: node.id,
@@ -242,36 +307,36 @@ async function inspectNodeBindings(node, component, variableIndex) {
             matchedVariableId: match === null || match === void 0 ? void 0 : match.variable.id,
             matchedVariablePath: match === null || match === void 0 ? void 0 : match.variablePath,
             proposedCollectionName: (_c = (_b = match === null || match === void 0 ? void 0 : match.collectionName) !== null && _b !== void 0 ? _b : firstCollectionName(variableIndex)) !== null && _c !== void 0 ? _c : "Semantic",
-            proposedPath: (_d = match === null || match === void 0 ? void 0 : match.variablePath) !== null && _d !== void 0 ? _d : proposePath((_e = firstCollectionName(variableIndex)) !== null && _e !== void 0 ? _e : "Semantic", component, node, bindable.property),
-            candidatePaths: buildCandidatePaths((_f = firstCollectionName(variableIndex)) !== null && _f !== void 0 ? _f : "Semantic", component, node, bindable.property),
+            proposedPath: (_d = match === null || match === void 0 ? void 0 : match.variablePath) !== null && _d !== void 0 ? _d : proposePath((_e = firstCollectionName(variableIndex)) !== null && _e !== void 0 ? _e : "Semantic", pathContext, node, bindable.property),
+            candidatePaths: buildCandidatePaths((_f = firstCollectionName(variableIndex)) !== null && _f !== void 0 ? _f : "Semantic", pathContext, node, bindable.property),
             variantSegments: component.variantSegments,
             variantProperties: component.variantSegments.map((segment) => segment.property),
+            pathComponentName: pathContext.componentName,
+            pathVariantSegments: pathContext.variantSegments,
             skippedBecauseBound: false
         });
     }
     return candidates;
 }
 function extractBindableFields(node) {
-    var _a;
     const items = [];
     const anyNode = node;
     if ("fills" in anyNode && Array.isArray(anyNode.fills)) {
         const fill = anyNode.fills.find((paint) => paint.type === "SOLID");
         if (fill) {
-            items.push({ property: "fills.color", rawValue: fill.color, resolvedType: "COLOR" });
-            const fillOpacity = (_a = fill.opacity) !== null && _a !== void 0 ? _a : 1;
-            if (!isFullOpacity(fillOpacity)) {
-                items.push({ property: "fills.opacity", rawValue: fillOpacity, resolvedType: "FLOAT" });
-            }
+            items.push({ property: "fills.color", rawValue: solidPaintToRgba(fill), resolvedType: "COLOR" });
         }
     }
     if ("strokes" in anyNode && Array.isArray(anyNode.strokes)) {
         const stroke = anyNode.strokes.find((paint) => paint.type === "SOLID");
         if (stroke) {
-            items.push({ property: "strokes.color", rawValue: stroke.color, resolvedType: "COLOR" });
+            items.push({ property: "strokes.color", rawValue: solidPaintToRgba(stroke), resolvedType: "COLOR" });
         }
     }
     const numericFields = [
+        "width",
+        "height",
+        "strokeWeight",
         "opacity",
         "topLeftRadius",
         "topRightRadius",
@@ -285,6 +350,12 @@ function extractBindableFields(node) {
     ];
     for (const field of numericFields) {
         if (typeof anyNode[field] === "number") {
+            if (field === "width" && isHugDimension(node, "horizontal")) {
+                continue;
+            }
+            if (field === "height" && isHugDimension(node, "vertical")) {
+                continue;
+            }
             if (field === "opacity" && isFullOpacity(anyNode[field])) {
                 continue;
             }
@@ -297,8 +368,8 @@ function extractBindableFields(node) {
             if (node.fontName !== figma.mixed) {
                 const fontName = node.fontName;
                 items.push({
-                    property: "fontName",
-                    rawValue: { family: fontName.family, style: fontName.style },
+                    property: "fontFamily",
+                    rawValue: fontName.family,
                     resolvedType: "STRING"
                 });
             }
@@ -323,7 +394,7 @@ function extractExistingBinding(node, property) {
     if (!bound) {
         return null;
     }
-    if (property === "fills.color" || property === "fills.opacity") {
+    if (property === "fills.color") {
         const paints = bound.fills;
         if (Array.isArray(paints)) {
             for (const entry of paints) {
@@ -331,9 +402,8 @@ function extractExistingBinding(node, property) {
                     continue;
                 }
                 const paintBinding = entry;
-                const key = property === "fills.color" ? "color" : "opacity";
-                if (paintBinding[key]) {
-                    return paintBinding[key];
+                if (paintBinding.color) {
+                    return paintBinding.color;
                 }
             }
         }
@@ -359,34 +429,32 @@ function extractExistingBinding(node, property) {
     }
     return null;
 }
-function findVariableMatch(node, property, component, variableIndex) {
+function findVariableMatch(node, property, pathContext, variableIndex) {
     for (const collectionName of collectionNames(variableIndex)) {
-        const candidatePaths = buildCandidatePaths(collectionName, component, node, property);
+        const candidatePaths = buildCandidatePaths(collectionName, pathContext, node, property);
         for (const candidatePath of candidatePaths) {
             const exact = variableIndex.get(candidatePath);
             if (exact === null || exact === void 0 ? void 0 : exact.length) {
                 return exact[0];
             }
         }
-        for (const candidatePath of candidatePaths) {
-            const fuzzy = [...variableIndex.values()].flat().find((entry) => entry.normalizedPath.includes(candidatePath));
-            if (fuzzy) {
-                return fuzzy;
-            }
-        }
     }
     return null;
 }
-function buildCandidatePaths(collectionName, component, node, property) {
+function buildCandidatePaths(collectionName, pathContext, node, property) {
     var _a;
     const baseSegments = [
         normalizeSegment(collectionName),
         COMPONENT_SEGMENT,
-        normalizeSegment(component.componentName),
-        ...component.variantSegments.map((segment) => normalizeSegment(segment.value))
+        normalizeSegment(pathContext.componentName),
+        ...pathContext.variantSegments.map((segment) => normalizeSegment(segment.value))
     ];
     const layerSegment = normalizeSegment(node.name);
-    const preferredLeaf = getTokenLeaf(node, component, property);
+    const preferredLeaf = getTokenLeaf(node, {
+        node: null,
+        componentName: pathContext.componentName,
+        variantSegments: pathContext.variantSegments
+    }, property);
     const leafs = new Set();
     if (preferredLeaf) {
         leafs.add(preferredLeaf);
@@ -407,15 +475,19 @@ function buildCandidatePaths(collectionName, component, node, property) {
     }
     return candidates;
 }
-function proposePath(collectionName, component, node, property, allowedVariantProperties) {
+function proposePath(collectionName, pathContext, node, property, allowedVariantProperties) {
     const filteredSegments = allowedVariantProperties === undefined
-        ? component.variantSegments
-        : component.variantSegments.filter((segment) => allowedVariantProperties.includes(segment.property));
-    const lastSegment = getTokenLeaf(node, component, property);
+        ? pathContext.variantSegments
+        : pathContext.variantSegments.filter((segment) => allowedVariantProperties.includes(segment.property));
+    const lastSegment = getTokenLeaf(node, {
+        node: null,
+        componentName: pathContext.componentName,
+        variantSegments: pathContext.variantSegments
+    }, property);
     return [
         collectionName,
         COMPONENT_SEGMENT,
-        component.componentName,
+        pathContext.componentName,
         ...filteredSegments.map((segment) => segment.value),
         lastSegment
     ]
@@ -504,9 +576,9 @@ async function ensureVariableForCandidate(candidate, editedPath, selectedVariant
     }
     variable.setValueForMode(modeId, toVariableValue(candidate.rawValue, candidate.resolvedType));
     const component = {
-        componentName: segments[2],
+        componentName: candidate.pathComponentName,
         node: null,
-        variantSegments: candidate.variantSegments.filter((segment) => selectedVariantProperties.includes(segment.property))
+        variantSegments: candidate.pathVariantSegments.filter((segment) => selectedVariantProperties.includes(segment.property))
     };
     candidate.proposedPath = [
         collection.name,
@@ -519,8 +591,67 @@ async function ensureVariableForCandidate(candidate, editedPath, selectedVariant
         .join("/");
     return variable;
 }
+function buildSharedPropertyIndex(components) {
+    var _a, _b;
+    const observations = new Map();
+    const counts = new Map();
+    for (const component of components) {
+        const familyName = getComponentFamilyName(component.componentName);
+        if (!familyName) {
+            continue;
+        }
+        for (const node of walkNodes(component.node)) {
+            const bindables = extractBindableFields(node);
+            for (const bindable of bindables) {
+                const leaf = getTokenLeaf(node, component, bindable.property);
+                const key = `${normalizeSegment(familyName)}|${leaf}|${bindable.property}`;
+                const values = (_a = observations.get(key)) !== null && _a !== void 0 ? _a : new Set();
+                values.add(getComparableRawValue(bindable.rawValue, bindable.resolvedType));
+                observations.set(key, values);
+                counts.set(key, ((_b = counts.get(key)) !== null && _b !== void 0 ? _b : 0) + 1);
+            }
+        }
+    }
+    return new Set([...observations.entries()]
+        .filter(([key, values]) => { var _a; return values.size === 1 && ((_a = counts.get(key)) !== null && _a !== void 0 ? _a : 0) > 1; })
+        .map(([key]) => key));
+}
+function getPathContext(node, component, property, rawValue, resolvedType, sharedPropertyIndex) {
+    const familyName = getComponentFamilyName(component.componentName);
+    const leaf = getTokenLeaf(node, component, property);
+    const sharedKey = `${normalizeSegment(familyName)}|${leaf}|${property}`;
+    if (familyName && sharedPropertyIndex.has(sharedKey)) {
+        return {
+            componentName: familyName,
+            variantSegments: []
+        };
+    }
+    return {
+        componentName: component.componentName,
+        variantSegments: component.variantSegments
+    };
+}
+function getComponentFamilyName(componentName) {
+    const [familyName] = componentName.split("/").map((part) => part.trim()).filter(Boolean);
+    return familyName || componentName;
+}
+function getComparableRawValue(rawValue, resolvedType) {
+    if (resolvedType === "COLOR") {
+        return rgbaToHex(rawValue);
+    }
+    if (typeof rawValue === "number") {
+        return String(rawValue);
+    }
+    if (typeof rawValue === "string") {
+        return rawValue;
+    }
+    if (typeof rawValue === "object" && "family" in rawValue && "style" in rawValue) {
+        return `${rawValue.family}/${rawValue.style}`;
+    }
+    return JSON.stringify(rawValue);
+}
 async function bindVariableToNode(node, property, variable) {
-    if (property === "fills.color" || property === "fills.opacity") {
+    if (property === "fills.color") {
         if (!("fills" in node) || !Array.isArray(node.fills)) {
             throw new Error("Node does not support fill binding.");
         }
@@ -529,8 +660,7 @@ async function bindVariableToNode(node, property, variable) {
         if (index < 0) {
             throw new Error("No solid fill available to bind.");
         }
-        const field = property === "fills.color" ? "color" : "opacity";
-        paints[index] = figma.variables.setBoundVariableForPaint(paints[index], field, variable);
+        paints[index] = figma.variables.setBoundVariableForPaint(paints[index], "color", variable);
         node.fills = paints;
         return;
     }
@@ -547,7 +677,7 @@ async function bindVariableToNode(node, property, variable) {
         node.strokes = paints;
         return;
     }
-    if (node.type === "TEXT" && (property === "fontSize" || property === "fontName" || property === "fontWeight")) {
+    if (node.type === "TEXT" && (property === "fontSize" || property === "fontFamily" || property === "fontWeight")) {
         const textNode = node;
         if (textNode.characters.length === 0) {
             throw new Error("Empty text nodes cannot be bound.");
@@ -600,6 +730,15 @@ function rgbaToHex(color) {
     const alpha = "a" in color ? to255(color.a).toString(16).padStart(2, "0") : "";
     return `#${red}${green}${blue}${alpha}`.toUpperCase();
 }
+function solidPaintToRgba(paint) {
+    var _a;
+    return {
+        r: paint.color.r,
+        g: paint.color.g,
+        b: paint.color.b,
+        a: (_a = paint.opacity) !== null && _a !== void 0 ? _a : 1
+    };
+}
 function toVariableValue(rawValue, resolvedType) {
     if (resolvedType === "COLOR") {
         if (typeof rawValue === "object" && "r" in rawValue && "g" in rawValue && "b" in rawValue) {
@@ -638,6 +777,9 @@ function getTokenLeaf(node, component, property) {
     if (shouldUsePropertyAliasLeaf(node, component, property)) {
         return primaryAlias;
     }
+    if (shouldUseLayerAndPropertyLeaf(property, layerSegment)) {
+        return `${layerSegment}/${primaryAlias}`;
+    }
     return layerSegment || primaryAlias;
 }
 function getGroupedAlias(node, property) {
@@ -668,14 +810,13 @@ function getGroupedAlias(node, property) {
     return null;
 }
 function shouldUsePropertyAliasLeaf(node, component, property) {
-    if (node.id === component.node.id) {
+    if (component.node && node.id === component.node.id) {
         return true;
     }
     if (looksLikeVariantNodeName(node.name)) {
         return true;
     }
     return (property === "opacity" ||
-        property === "fills.opacity" ||
         property === "paddingTop" ||
         property === "paddingRight" ||
         property === "paddingBottom" ||
@@ -685,6 +826,28 @@ function shouldUsePropertyAliasLeaf(node, component, property) {
         property === "topRightRadius" ||
         property === "bottomLeftRadius" ||
         property === "bottomRightRadius") && !normalizeSegment(node.name);
+}
+function shouldUseLayerAndPropertyLeaf(property, layerSegment) {
+    if (!layerSegment) {
+        return false;
+    }
+    return (property === "strokes.color" ||
+        property === "strokeWeight" ||
+        property === "opacity" ||
+        property === "width" ||
+        property === "height" ||
+        property === "fontSize" ||
+        property === "fontFamily" ||
+        property === "fontWeight" ||
+        property === "paddingTop" ||
+        property === "paddingRight" ||
+        property === "paddingBottom" ||
+        property === "paddingLeft" ||
+        property === "itemSpacing" ||
+        property === "topLeftRadius" ||
+        property === "topRightRadius" ||
+        property === "bottomLeftRadius" ||
+        property === "bottomRightRadius");
 }
 function looksLikeVariantNodeName(value) {
     return value.includes("=") && /[a-z]/i.test(value);
@@ -697,6 +860,10 @@ function hasEqualNumericValues(node, first, second) {
 function getNumericNodeValue(node, field) {
     const value = node[field];
     return typeof value === "number" ? value : null;
+}
+function isHugDimension(node, axis) {
+    const field = axis === "horizontal" ? "layoutSizingHorizontal" : "layoutSizingVertical";
+    return node[field] === "HUG";
 }
 function isPaddingProperty(property) {
     return (property === "paddingTop" ||
