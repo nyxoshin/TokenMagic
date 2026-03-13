@@ -30,7 +30,11 @@ type BindableProperty =
   | "itemSpacing"
   | "fontSize"
   | "fontFamily"
-  | "fontWeight";
+  | "fontWeight"
+  | "lineHeight"
+  | "letterSpacing"
+  | "paragraphSpacing"
+  | "paragraphIndent";
 
 type RawValue =
   | RGB
@@ -43,11 +47,27 @@ type RawValue =
     };
 
 type CollectionKind = "colors" | "typography" | "device";
+type ScanMode =
+  | "selected-objects"
+  | "selected-objects-with-internal-layers"
+  | "selected-objects-with-semantic-internal-layers";
+
+type PropertyFamily = "colors" | "typography" | "spacing" | "radius" | "size" | "border" | "opacity";
+
+type ScanSettings = {
+  colorsScanMode: ScanMode;
+  typographyScanMode: ScanMode;
+  deviceScanMode: ScanMode;
+  enabledFamilies: Record<PropertyFamily, boolean>;
+  semanticAllowlist: string[];
+  semanticDenylist: string[];
+};
 
 type MatchCandidate = {
   id: string;
   nodeId: string;
   nodeName: string;
+  pathNodeName: string;
   property: BindableProperty;
   resolvedType: VariableResolvedDataType;
   rawValue: RawValue;
@@ -65,10 +85,13 @@ type MatchCandidate = {
   pathVariantSegments: VariantSegment[];
   skippedBecauseBound: boolean;
   existingBindingName?: string;
+  rangeStart?: number;
+  rangeEnd?: number;
 };
 
 type PreparedComponent = {
-  node: ComponentNode;
+  node: SceneNode;
+  ownerComponent: ComponentNode;
   componentName: string;
   variantSegments: VariantSegment[];
 };
@@ -103,16 +126,41 @@ type UIUnmatchedItem = {
   selectedVariantProperties: string[];
 };
 
+type UISkippedItem = {
+  id: string;
+  label: string;
+  reason: string;
+};
+
+type UIConflictItem = {
+  id: string;
+  label: string;
+  path: string;
+  reason: string;
+  pathKind: "base" | "semantic" | "component";
+  chainLevelLabel: string;
+  proposedPath: string;
+  fallbackPath?: string;
+  resolvedPreviewPath: string;
+  action: "skip" | "reuse-existing" | "rename-proposed" | "create-deeper-semantic";
+};
+
+type ExecutionMode = "create-and-bind" | "dry-run" | "create-only" | "bind-only";
+
 type AnalyzeResponse = {
   type: "analysis";
   ready: UISelectionItem[];
   unmatched: UIUnmatchedItem[];
+  skippedItems: UISkippedItem[];
+  conflicts: UIConflictItem[];
   skippedBound: number;
   selectionSummary: string;
+  settings: ScanSettings;
 };
 
 type ConfirmMessage = {
   type: "confirm-bind";
+  executionMode: ExecutionMode;
   readyIds: string[];
   createBaseVariables: boolean;
   unmatched: Array<{
@@ -123,12 +171,28 @@ type ConfirmMessage = {
     skip: boolean;
     variantProperties: string[];
   }>;
+  conflicts: Array<{
+    id: string;
+    action: "skip" | "reuse-existing" | "rename-proposed" | "create-deeper-semantic";
+    proposedPath: string;
+    pathKind: "base" | "semantic" | "component";
+    fallbackPath?: string;
+  }>;
+};
+
+type RequestAnalysisMessage = {
+  type: "request-analysis";
+  settings?: Partial<ScanSettings>;
 };
 
 type SummaryResponse = {
   type: "summary";
+  executionMode: ExecutionMode;
   bound: number;
+  created: number;
   skipped: number;
+  plannedBound?: number;
+  plannedCreated?: number;
   errors: string[];
 };
 
@@ -154,22 +218,67 @@ const PROPERTY_ALIASES: Record<BindableProperty, string[]> = {
   itemSpacing: ["gap", "item-spacing", "spacing"],
   fontSize: ["font-size", "text-size"],
   fontFamily: ["font-family"],
-  fontWeight: ["font-weight"]
+  fontWeight: ["font-weight"],
+  lineHeight: ["line-height"],
+  letterSpacing: ["letter-spacing"],
+  paragraphSpacing: ["paragraph-spacing"],
+  paragraphIndent: ["paragraph-indent"]
 };
 
 const analysisState = new Map<string, MatchCandidate>();
+const defaultScanSettings: ScanSettings = {
+  colorsScanMode: "selected-objects-with-internal-layers",
+  typographyScanMode: "selected-objects-with-semantic-internal-layers",
+  deviceScanMode: "selected-objects",
+  enabledFamilies: {
+    colors: true,
+    typography: true,
+    spacing: true,
+    radius: true,
+    size: true,
+    border: true,
+    opacity: true
+  },
+  semanticAllowlist: [],
+  semanticDenylist: [
+    "primary",
+    "secondary",
+    "tertiary",
+    "vector",
+    "shape",
+    "group",
+    "union",
+    "path",
+    "frame",
+    "rectangle",
+    "ellipse",
+    "polygon",
+    "line",
+    "star",
+    "boolean-operation",
+    "mask"
+  ]
+};
+let currentScanSettings: ScanSettings = {
+  ...defaultScanSettings,
+  enabledFamilies: { ...defaultScanSettings.enabledFamilies },
+  semanticAllowlist: [...defaultScanSettings.semanticAllowlist],
+  semanticDenylist: [...defaultScanSettings.semanticDenylist]
+};
 
 figma.showUI(__html__, { width: UI_WIDTH, height: UI_HEIGHT, themeColors: true });
 void initialize();
 
 async function initialize() {
   try {
-    const analysis = await analyzeSelection();
+    const analysis = await analyzeSelection(currentScanSettings);
     figma.ui.postMessage(analysis);
   } catch (error) {
     figma.ui.postMessage({
       type: "summary",
+      executionMode: "create-and-bind",
       bound: 0,
+      created: 0,
       skipped: 0,
       errors: [formatError(error)]
     } satisfies SummaryResponse);
@@ -180,7 +289,26 @@ figma.on("selectionchange", () => {
   void initialize();
 });
 
-figma.ui.onmessage = async (message: ConfirmMessage) => {
+figma.ui.onmessage = async (message: ConfirmMessage | RequestAnalysisMessage) => {
+  if (message.type === "request-analysis") {
+    currentScanSettings = {
+      ...currentScanSettings,
+      ...message.settings,
+      enabledFamilies: {
+        ...currentScanSettings.enabledFamilies,
+        ...(message.settings?.enabledFamilies ?? {})
+      },
+      semanticAllowlist: message.settings?.semanticAllowlist
+        ? [...message.settings.semanticAllowlist]
+        : currentScanSettings.semanticAllowlist,
+      semanticDenylist: message.settings?.semanticDenylist
+        ? [...message.settings.semanticDenylist]
+        : currentScanSettings.semanticDenylist
+    };
+    await initialize();
+    return;
+  }
+
   if (message.type !== "confirm-bind") {
     return;
   }
@@ -191,14 +319,16 @@ figma.ui.onmessage = async (message: ConfirmMessage) => {
   } catch (error) {
     figma.ui.postMessage({
       type: "summary",
+      executionMode: "create-and-bind",
       bound: 0,
+      created: 0,
       skipped: 0,
       errors: [formatError(error)]
     } satisfies SummaryResponse);
   }
 };
 
-async function analyzeSelection(): Promise<AnalyzeResponse> {
+async function analyzeSelection(scanSettings: ScanSettings): Promise<AnalyzeResponse> {
   analysisState.clear();
 
   const collections = await figma.variables.getLocalVariableCollectionsAsync();
@@ -213,15 +343,22 @@ async function analyzeSelection(): Promise<AnalyzeResponse> {
       type: "analysis",
       ready: [],
       unmatched: [],
+      skippedItems: [],
+      conflicts: [],
       skippedBound: 0,
-      selectionSummary: "Select at least one component or component set."
+      selectionSummary: "Select a component, component set, or a layer inside a component.",
+      settings: scanSettings
     };
   }
 
-  const matches = await collectMatches(preparedComponents, variableIndex);
+  const { matches, skippedItems } = await collectMatches(preparedComponents, variableIndex, scanSettings);
   for (const match of matches) {
     analysisState.set(match.id, match);
   }
+
+  const unmatchedCandidates = matches.filter((match) => !match.matched && !match.skippedBecauseBound);
+  const conflictItems = await preflightConflicts(unmatchedCandidates, collections, variableIndex);
+  const conflictIds = new Set(conflictItems.map((item) => item.id));
 
   return {
     type: "analysis",
@@ -234,7 +371,7 @@ async function analyzeSelection(): Promise<AnalyzeResponse> {
         checked: true
       })),
     unmatched: matches
-      .filter((match) => !match.matched && !match.skippedBecauseBound)
+      .filter((match) => !match.matched && !match.skippedBecauseBound && !conflictIds.has(match.id))
       .map((match) => ({
         id: match.id,
         label: `${match.nodeName} · ${match.property}`,
@@ -246,8 +383,11 @@ async function analyzeSelection(): Promise<AnalyzeResponse> {
         variantProperties: match.variantProperties,
         selectedVariantProperties: [...match.variantProperties]
       })),
+    skippedItems,
+    conflicts: conflictItems,
     skippedBound: matches.filter((match) => match.skippedBecauseBound).length,
-    selectionSummary: `Prepared ${preparedComponents.length} component${preparedComponents.length === 1 ? "" : "s"} for binding.`
+    selectionSummary: `Prepared ${preparedComponents.length} selection target${preparedComponents.length === 1 ? "" : "s"} for binding.`,
+    settings: scanSettings
   };
 }
 
@@ -294,10 +434,6 @@ function prepareSelection(selection: readonly SceneNode[]): PreparedComponent[] 
   const prepared: PreparedComponent[] = [];
 
   for (const node of selection) {
-    if (!MATCHABLE_NODE_TYPES.has(node.type)) {
-      continue;
-    }
-
     if (node.type === "COMPONENT_SET") {
       for (const child of node.children) {
         if (child.type !== "COMPONENT") {
@@ -306,6 +442,7 @@ function prepareSelection(selection: readonly SceneNode[]): PreparedComponent[] 
 
         prepared.push({
           node: child,
+          ownerComponent: child,
           componentName: node.name,
           variantSegments: extractVariantSegments(child, node)
         });
@@ -313,20 +450,53 @@ function prepareSelection(selection: readonly SceneNode[]): PreparedComponent[] 
       continue;
     }
 
-    const componentNode = node as ComponentNode;
-    const parent = componentNode.parent;
-    const variantSegments =
-      parent && parent.type === "COMPONENT_SET" ? extractVariantSegments(componentNode, parent) : [];
-    const componentName = parent && parent.type === "COMPONENT_SET" ? parent.name : componentNode.name;
+    if (node.type === "COMPONENT") {
+      const componentNode = node as ComponentNode;
+      const parent = componentNode.parent;
+      const variantSegments =
+        parent && parent.type === "COMPONENT_SET" ? extractVariantSegments(componentNode, parent) : [];
+      const componentName = parent && parent.type === "COMPONENT_SET" ? parent.name : componentNode.name;
 
+      prepared.push({
+        node: componentNode,
+        ownerComponent: componentNode,
+        componentName,
+        variantSegments
+      });
+      continue;
+    }
+
+    const ownerComponent = findOwningComponent(node);
+    if (!ownerComponent) {
+      continue;
+    }
+
+    const parent = ownerComponent.parent;
+    const variantSegments =
+      parent && parent.type === "COMPONENT_SET" ? extractVariantSegments(ownerComponent, parent) : [];
+    const componentName = parent && parent.type === "COMPONENT_SET" ? parent.name : ownerComponent.name;
     prepared.push({
-      node: componentNode,
+      node,
+      ownerComponent,
       componentName,
       variantSegments
     });
   }
 
   return prepared;
+}
+
+function findOwningComponent(node: SceneNode): ComponentNode | null {
+  let current: BaseNode | null = node;
+
+  while (current) {
+    if (current.type === "COMPONENT") {
+      return current;
+    }
+    current = current.parent;
+  }
+
+  return null;
 }
 
 function extractVariantSegments(componentNode: ComponentNode, componentSet?: ComponentSetNode): VariantSegment[] {
@@ -412,20 +582,31 @@ function parseVariantSegments(variantName: string): VariantSegment[] {
 
 async function collectMatches(
   components: PreparedComponent[],
-  variableIndex: Map<string, VariableLookupEntry[]>
-): Promise<MatchCandidate[]> {
+  variableIndex: Map<string, VariableLookupEntry[]>,
+  scanSettings: ScanSettings
+): Promise<{ matches: MatchCandidate[]; skippedItems: UISkippedItem[] }> {
   const matches: MatchCandidate[] = [];
-  const sharedPropertyIndex = buildSharedPropertyIndex(components);
+  const skippedItems: UISkippedItem[] = [];
+  const skippedKeys = new Set<string>();
+  const sharedPropertyIndex = buildSharedPropertyIndex(components, scanSettings);
 
   for (const component of components) {
     const nodes = walkNodes(component.node);
     for (const node of nodes) {
-      const bindables = await inspectNodeBindings(node, component, variableIndex, sharedPropertyIndex);
+      const result = await inspectNodeBindings(node, component, variableIndex, sharedPropertyIndex, scanSettings);
+      for (const skipped of result.skippedItems) {
+        const key = `${skipped.id}:${skipped.reason}`;
+        if (!skippedKeys.has(key)) {
+          skippedKeys.add(key);
+          skippedItems.push(skipped);
+        }
+      }
+      const bindables = result.candidates;
       matches.push(...bindables);
     }
   }
 
-  return matches;
+  return { matches, skippedItems };
 }
 
 function walkNodes(root: SceneNode): SceneNode[] {
@@ -440,7 +621,26 @@ function walkNodes(root: SceneNode): SceneNode[] {
       if (child.type === "INSTANCE") {
         continue;
       }
-      nodes.push(...walkNodes(child as SceneNode));
+      nodes.push(...walkDescendants(child as SceneNode));
+    }
+  }
+
+  return nodes;
+}
+
+function walkDescendants(node: SceneNode): SceneNode[] {
+  if (node.type === "INSTANCE") {
+    return [];
+  }
+
+  const nodes: SceneNode[] = [node];
+
+  if ("children" in node) {
+    for (const child of node.children) {
+      if (child.type === "INSTANCE") {
+        continue;
+      }
+      nodes.push(...walkDescendants(child as SceneNode));
     }
   }
 
@@ -451,20 +651,43 @@ async function inspectNodeBindings(
   node: SceneNode,
   component: PreparedComponent,
   variableIndex: Map<string, VariableLookupEntry[]>,
-  sharedPropertyIndex: SharedPropertyIndex
-): Promise<MatchCandidate[]> {
+  sharedPropertyIndex: SharedPropertyIndex,
+  scanSettings: ScanSettings
+): Promise<{ candidates: MatchCandidate[]; skippedItems: UISkippedItem[] }> {
   const candidates: MatchCandidate[] = [];
-  const bindables = extractBindableFields(node);
+  const skippedItems: UISkippedItem[] = [];
+  const extracted = extractBindableFields(node);
+  const bindables = extracted.items;
+
+  for (const skipped of extracted.skippedItems) {
+    if (shouldIncludeSkippedForSettings(node, component, skipped.property, scanSettings)) {
+      skippedItems.push({
+        id: `${node.id}:${skipped.property}:skipped`,
+        label: `${node.name} · ${skipped.property}`,
+        reason: skipped.reason
+      });
+    }
+  }
 
   for (const bindable of bindables) {
-    const pathContext = getPathContext(node, component, bindable.property, bindable.rawValue, bindable.resolvedType, sharedPropertyIndex);
-    const proposedChain = buildProposedChain(pathContext, node, bindable.property, bindable.rawValue);
-    const existingBinding = await getExistingBindingName(node, bindable.property);
+    if (!shouldIncludeBindableForSettings(node, component, bindable.property, scanSettings)) {
+      continue;
+    }
+
+    const effectiveNode = bindable.pathNodeName
+      ? ({ ...(node as unknown as Record<string, unknown>), name: bindable.pathNodeName } as SceneNode)
+      : node;
+    const pathContext = getPathContext(effectiveNode, component, bindable.property, bindable.rawValue, bindable.resolvedType, sharedPropertyIndex);
+    const proposedChain = buildProposedChain(pathContext, effectiveNode, bindable.property, bindable.rawValue);
+    const existingBinding = await getExistingBindingName(node, bindable.property, bindable.rangeStart, bindable.rangeEnd);
+    const candidateId = `${node.id}:${bindable.property}:${bindable.rangeStart ?? "all"}:${bindable.rangeEnd ?? "all"}`;
+    const candidateNodeName = bindable.displayNodeName ?? node.name;
     if (existingBinding) {
       candidates.push({
-        id: `${node.id}:${bindable.property}`,
+        id: candidateId,
         nodeId: node.id,
-        nodeName: node.name,
+        nodeName: candidateNodeName,
+        pathNodeName: bindable.pathNodeName ?? node.name,
         property: bindable.property,
         resolvedType: bindable.resolvedType,
         rawValue: bindable.rawValue,
@@ -479,16 +702,19 @@ async function inspectNodeBindings(
         pathComponentName: pathContext.componentName,
         pathVariantSegments: pathContext.variantSegments,
         skippedBecauseBound: true,
-        existingBindingName: existingBinding
+        existingBindingName: existingBinding,
+        rangeStart: bindable.rangeStart,
+        rangeEnd: bindable.rangeEnd
       });
       continue;
     }
 
-    const match = findVariableMatch(node, bindable.property, pathContext, variableIndex);
+    const match = findVariableMatch(effectiveNode, bindable.property, pathContext, variableIndex);
     candidates.push({
-      id: `${node.id}:${bindable.property}`,
+      id: candidateId,
       nodeId: node.id,
-      nodeName: node.name,
+      nodeName: candidateNodeName,
+      pathNodeName: bindable.pathNodeName ?? node.name,
       property: bindable.property,
       resolvedType: bindable.resolvedType,
       rawValue: bindable.rawValue,
@@ -499,38 +725,66 @@ async function inspectNodeBindings(
       proposedBasePath: proposedChain.basePath,
       proposedSemanticPath: proposedChain.semanticPath,
       proposedComponentPath: match?.variablePath ?? proposedChain.componentPath,
-      candidatePaths: buildCandidatePaths(proposedChain.collectionKind, pathContext, node, bindable.property),
+      candidatePaths: buildCandidatePaths(proposedChain.collectionKind, pathContext, effectiveNode, bindable.property),
       variantSegments: component.variantSegments,
       variantProperties: component.variantSegments.map((segment) => segment.property),
       pathComponentName: pathContext.componentName,
       pathVariantSegments: pathContext.variantSegments,
-      skippedBecauseBound: false
+      skippedBecauseBound: false,
+      rangeStart: bindable.rangeStart,
+      rangeEnd: bindable.rangeEnd
     });
   }
 
-  return candidates;
+  return { candidates, skippedItems };
 }
 
 function extractBindableFields(
   node: SceneNode
-): Array<{ property: BindableProperty; rawValue: RawValue; resolvedType: VariableResolvedDataType }> {
-  const items: Array<{ property: BindableProperty; rawValue: RawValue; resolvedType: VariableResolvedDataType }> = [];
+): {
+  items: Array<{
+    property: BindableProperty;
+    rawValue: RawValue;
+    resolvedType: VariableResolvedDataType;
+    displayNodeName?: string;
+    pathNodeName?: string;
+    rangeStart?: number;
+    rangeEnd?: number;
+  }>;
+  skippedItems: Array<{ property: BindableProperty; reason: string }>;
+} {
+  const items: Array<{
+    property: BindableProperty;
+    rawValue: RawValue;
+    resolvedType: VariableResolvedDataType;
+    displayNodeName?: string;
+    pathNodeName?: string;
+    rangeStart?: number;
+    rangeEnd?: number;
+  }> = [];
+  const skippedItems: Array<{ property: BindableProperty; reason: string }> = [];
   const anyNode = node as SceneNode & Record<string, unknown>;
 
   if ("fills" in anyNode && Array.isArray(anyNode.fills)) {
-    const fill = (anyNode.fills as Paint[]).find((paint) => paint.type === "SOLID") as SolidPaint | undefined;
-    if (fill) {
-      items.push({ property: "fills.color", rawValue: solidPaintToRgba(fill), resolvedType: "COLOR" });
+    const fills = anyNode.fills as Paint[];
+    const fillSupport = getPaintSupportDetails(fills, "fill");
+    if (fillSupport.kind === "single-solid" && fillSupport.paint) {
+      items.push({ property: "fills.color", rawValue: solidPaintToRgba(fillSupport.paint), resolvedType: "COLOR" });
+    } else if (fillSupport.reason) {
+      skippedItems.push({ property: "fills.color", reason: fillSupport.reason });
     }
   }
 
   if ("strokes" in anyNode && Array.isArray(anyNode.strokes)) {
-    const stroke = (anyNode.strokes as Paint[]).find((paint) => paint.type === "SOLID") as SolidPaint | undefined;
-    if (stroke) {
-      items.push({ property: "strokes.color", rawValue: solidPaintToRgba(stroke), resolvedType: "COLOR" });
+    const strokes = anyNode.strokes as Paint[];
+    const strokeSupport = getPaintSupportDetails(strokes, "stroke");
+    if (strokeSupport.kind === "single-solid" && strokeSupport.paint) {
+      items.push({ property: "strokes.color", rawValue: solidPaintToRgba(strokeSupport.paint), resolvedType: "COLOR" });
       if (typeof anyNode.strokeWeight === "number") {
         items.push({ property: "strokeWeight", rawValue: anyNode.strokeWeight as number, resolvedType: "FLOAT" });
       }
+    } else if (strokeSupport.reason) {
+      skippedItems.push({ property: "strokes.color", reason: strokeSupport.reason });
     }
   }
 
@@ -551,13 +805,16 @@ function extractBindableFields(
 
   for (const field of numericFields) {
     if (typeof anyNode[field] === "number") {
-      if (field === "width" && isHugDimension(node, "horizontal")) {
+      if (field === "width" && shouldSkipDimensionVariable(node, "horizontal")) {
+        skippedItems.push({ property: "width", reason: "Width is skipped for HUG or FILL sizing." });
         continue;
       }
-      if (field === "height" && isHugDimension(node, "vertical")) {
+      if (field === "height" && shouldSkipDimensionVariable(node, "vertical")) {
+        skippedItems.push({ property: "height", reason: "Height is skipped for HUG or FILL sizing." });
         continue;
       }
       if (field === "opacity" && isFullOpacity(anyNode[field] as number)) {
+        skippedItems.push({ property: "opacity", reason: "Full opacity does not create a standalone variable." });
         continue;
       }
       items.push({ property: field, rawValue: anyNode[field] as number, resolvedType: "FLOAT" });
@@ -566,26 +823,411 @@ function extractBindableFields(
 
   if (node.type === "TEXT") {
     if (node.characters.length > 0) {
-      items.push({ property: "fontSize", rawValue: numberOrZero(node.fontSize), resolvedType: "FLOAT" });
-      if (node.fontName !== figma.mixed) {
-        const fontName = node.fontName as FontName;
-        items.push({
-          property: "fontFamily",
-          rawValue: fontName.family,
-          resolvedType: "STRING"
-        });
-      }
-      if (typeof node.fontWeight === "number") {
-        items.push({ property: "fontWeight", rawValue: node.fontWeight, resolvedType: "FLOAT" });
-      }
+      const textExtraction = extractTextBindableFields(node);
+      items.push(...textExtraction.items);
+      skippedItems.push(...textExtraction.skippedItems);
     }
   }
 
-  return items;
+  return { items, skippedItems };
 }
 
-async function getExistingBindingName(node: SceneNode, property: BindableProperty): Promise<string | null> {
-  const binding = extractExistingBinding(node, property);
+function percentTypographyValueToPixels(fontSize: number, percentValue: number): number {
+  return (fontSize * percentValue) / 100;
+}
+
+function extractTextBindableFields(node: TextNode): {
+  items: Array<{
+    property: BindableProperty;
+    rawValue: RawValue;
+    resolvedType: VariableResolvedDataType;
+    displayNodeName?: string;
+    pathNodeName?: string;
+    rangeStart?: number;
+    rangeEnd?: number;
+  }>;
+  skippedItems: Array<{ property: BindableProperty; reason: string }>;
+} {
+  const items: Array<{
+    property: BindableProperty;
+    rawValue: RawValue;
+    resolvedType: VariableResolvedDataType;
+    displayNodeName?: string;
+    pathNodeName?: string;
+    rangeStart?: number;
+    rangeEnd?: number;
+  }> = [];
+  const skippedItems: Array<{ property: BindableProperty; reason: string }> = [];
+  const numericFontSize = typeof node.fontSize === "number" ? node.fontSize : null;
+  const segments = getTextStyledSegments(node);
+
+  if (numericFontSize !== null) {
+    items.push({ property: "fontSize", rawValue: numericFontSize, resolvedType: "FLOAT" });
+  } else {
+    const rangeItems = extractRangeTextPropertyItems(node, "fontSize", segments);
+    if (rangeItems.length > 0) {
+      items.push(...rangeItems);
+    } else {
+      skippedItems.push({ property: "fontSize", reason: "Mixed text styles are not supported for font size yet." });
+    }
+  }
+
+  if (node.fontName !== figma.mixed) {
+    const fontName = node.fontName as FontName;
+    items.push({
+      property: "fontFamily",
+      rawValue: fontName.family,
+      resolvedType: "STRING"
+    });
+  } else {
+    const rangeItems = extractRangeTextPropertyItems(node, "fontFamily", segments);
+    if (rangeItems.length > 0) {
+      items.push(...rangeItems);
+    } else {
+      skippedItems.push({ property: "fontFamily", reason: "Mixed text styles are not supported for font family yet." });
+    }
+  }
+
+  if (typeof node.fontWeight === "number") {
+    items.push({ property: "fontWeight", rawValue: node.fontWeight, resolvedType: "FLOAT" });
+  } else {
+    const rangeItems = extractRangeTextPropertyItems(node, "fontWeight", segments);
+    if (rangeItems.length > 0) {
+      items.push(...rangeItems);
+    } else {
+      skippedItems.push({ property: "fontWeight", reason: "Mixed text styles are not supported for font weight yet." });
+    }
+  }
+
+  if (node.lineHeight !== figma.mixed) {
+    const value = resolveTextLineHeightValue(node.lineHeight as LineHeight, numericFontSize);
+    if (typeof value === "number") {
+      if (!shouldSkipDefaultTextNumericValue("lineHeight", value)) {
+        items.push({ property: "lineHeight", rawValue: value, resolvedType: "FLOAT" });
+      } else {
+        skippedItems.push({ property: "lineHeight", reason: "Default line height does not create a token." });
+      }
+    } else {
+      skippedItems.push({ property: "lineHeight", reason: value ?? "Line height is not supported yet." });
+    }
+  } else {
+    const rangeItems = extractRangeTextPropertyItems(node, "lineHeight", segments);
+    if (rangeItems.length > 0) {
+      items.push(...rangeItems);
+    } else {
+      skippedItems.push({ property: "lineHeight", reason: "Mixed text styles are not supported for line height yet." });
+    }
+  }
+
+  if (node.letterSpacing !== figma.mixed) {
+    const value = resolveTextLetterSpacingValue(node.letterSpacing as LetterSpacing, numericFontSize);
+    if (typeof value === "number") {
+      if (!shouldSkipDefaultTextNumericValue("letterSpacing", value)) {
+        items.push({ property: "letterSpacing", rawValue: value, resolvedType: "FLOAT" });
+      } else {
+        skippedItems.push({ property: "letterSpacing", reason: "Default letter spacing does not create a token." });
+      }
+    } else {
+      skippedItems.push({ property: "letterSpacing", reason: value ?? "Letter spacing is not supported yet." });
+    }
+  } else {
+    const rangeItems = extractRangeTextPropertyItems(node, "letterSpacing", segments);
+    if (rangeItems.length > 0) {
+      items.push(...rangeItems);
+    } else {
+      skippedItems.push({ property: "letterSpacing", reason: "Mixed text styles are not supported for letter spacing yet." });
+    }
+  }
+
+  if (typeof node.paragraphSpacing === "number") {
+    if (!shouldSkipDefaultTextNumericValue("paragraphSpacing", node.paragraphSpacing)) {
+      items.push({ property: "paragraphSpacing", rawValue: node.paragraphSpacing, resolvedType: "FLOAT" });
+    } else {
+      skippedItems.push({ property: "paragraphSpacing", reason: "Default paragraph spacing does not create a token." });
+    }
+  } else {
+    const rangeItems = extractRangeTextPropertyItems(node, "paragraphSpacing", segments);
+    if (rangeItems.length > 0) {
+      items.push(...rangeItems);
+    } else {
+      skippedItems.push({ property: "paragraphSpacing", reason: "Mixed text styles are not supported for paragraph spacing yet." });
+    }
+  }
+
+  if (typeof node.paragraphIndent === "number") {
+    if (!shouldSkipDefaultTextNumericValue("paragraphIndent", node.paragraphIndent)) {
+      items.push({ property: "paragraphIndent", rawValue: node.paragraphIndent, resolvedType: "FLOAT" });
+    } else {
+      skippedItems.push({ property: "paragraphIndent", reason: "Default paragraph indent does not create a token." });
+    }
+  } else {
+    const rangeItems = extractRangeTextPropertyItems(node, "paragraphIndent", segments);
+    if (rangeItems.length > 0) {
+      items.push(...rangeItems);
+    } else {
+      skippedItems.push({ property: "paragraphIndent", reason: "Mixed text styles are not supported for paragraph indent yet." });
+    }
+  }
+
+  return { items, skippedItems };
+}
+
+function getTextStyledSegments(node: TextNode): Array<Record<string, unknown> & { start: number; end: number; characters: string }> {
+  const textNode = node as TextNode & {
+    getStyledTextSegments?: (fields: string[]) => Array<Record<string, unknown> & { start: number; end: number; characters: string }>;
+  };
+
+  if (!textNode.getStyledTextSegments) {
+    return [];
+  }
+
+  return textNode.getStyledTextSegments([
+    "fontSize",
+    "fontName",
+    "fontWeight",
+    "lineHeight",
+    "letterSpacing",
+    "paragraphSpacing",
+    "paragraphIndent"
+  ]) ?? [];
+}
+
+function extractRangeTextPropertyItems(
+  node: TextNode,
+  property: BindableProperty,
+  segments: Array<Record<string, unknown> & { start: number; end: number; characters: string }>
+): Array<{
+  property: BindableProperty;
+  rawValue: RawValue;
+  resolvedType: VariableResolvedDataType;
+  displayNodeName?: string;
+  pathNodeName?: string;
+  rangeStart?: number;
+  rangeEnd?: number;
+}> {
+  const rangeItems: Array<{
+    property: BindableProperty;
+    rawValue: RawValue;
+    resolvedType: VariableResolvedDataType;
+    displayNodeName?: string;
+    pathNodeName?: string;
+    rangeStart?: number;
+    rangeEnd?: number;
+  }> = [];
+
+  for (const segment of segments) {
+    const rawValue = getTextSegmentRawValue(segment, property);
+    if (rawValue === null) {
+      continue;
+    }
+    if (typeof rawValue === "number" && shouldSkipDefaultTextNumericValue(property, rawValue)) {
+      continue;
+    }
+
+    const previous = rangeItems[rangeItems.length - 1];
+    const comparable = getComparableRawValue(rawValue, getResolvedTypeForTextProperty(property));
+    if (
+      previous &&
+      previous.rangeEnd === segment.start &&
+      getComparableRawValue(previous.rawValue, previous.resolvedType) === comparable
+    ) {
+      previous.rangeEnd = segment.end;
+      previous.displayNodeName = buildTextRangeDisplayNodeName(
+        node.name,
+        rangeItems.length,
+        node.characters.slice(previous.rangeStart ?? 0, segment.end)
+      );
+      continue;
+    }
+
+    const textSlice = node.characters.slice(segment.start, segment.end);
+    const rangeIndex = rangeItems.length + 1;
+    rangeItems.push({
+      property,
+      rawValue,
+      resolvedType: getResolvedTypeForTextProperty(property),
+      displayNodeName: buildTextRangeDisplayNodeName(node.name, rangeIndex, textSlice),
+      pathNodeName: buildTextRangePathNodeName(node.name, rangeIndex),
+      rangeStart: segment.start,
+      rangeEnd: segment.end
+    });
+  }
+
+  return rangeItems.filter((item) => item.rangeStart !== item.rangeEnd);
+}
+
+function getResolvedTypeForTextProperty(property: BindableProperty): VariableResolvedDataType {
+  return property === "fontFamily" ? "STRING" : "FLOAT";
+}
+
+function getTextSegmentRawValue(
+  segment: Record<string, unknown>,
+  property: BindableProperty
+): RawValue | null {
+  if (property === "fontSize") {
+    return typeof segment.fontSize === "number" ? segment.fontSize : null;
+  }
+  if (property === "fontFamily") {
+    const fontName = segment.fontName as FontName | undefined;
+    return fontName && typeof fontName.family === "string" ? fontName.family : null;
+  }
+  if (property === "fontWeight") {
+    return typeof segment.fontWeight === "number" ? segment.fontWeight : null;
+  }
+  if (property === "lineHeight") {
+    const fontSize = typeof segment.fontSize === "number" ? segment.fontSize : null;
+    const resolved = resolveTextLineHeightValue(segment.lineHeight as LineHeight | undefined, fontSize);
+    return typeof resolved === "number" ? resolved : null;
+  }
+  if (property === "letterSpacing") {
+    const fontSize = typeof segment.fontSize === "number" ? segment.fontSize : null;
+    const resolved = resolveTextLetterSpacingValue(segment.letterSpacing as LetterSpacing | undefined, fontSize);
+    return typeof resolved === "number" ? resolved : null;
+  }
+  if (property === "paragraphSpacing") {
+    return typeof segment.paragraphSpacing === "number" ? segment.paragraphSpacing : null;
+  }
+  if (property === "paragraphIndent") {
+    return typeof segment.paragraphIndent === "number" ? segment.paragraphIndent : null;
+  }
+  return null;
+}
+
+function resolveTextLineHeightValue(lineHeight: LineHeight | undefined, numericFontSize: number | null): number | string | null {
+  if (!lineHeight) {
+    return null;
+  }
+  if (lineHeight.unit === "PIXELS" && typeof lineHeight.value === "number") {
+    return lineHeight.value;
+  }
+  if (lineHeight.unit === "PERCENT" && typeof lineHeight.value === "number") {
+    if (numericFontSize !== null) {
+      return percentTypographyValueToPixels(numericFontSize, lineHeight.value);
+    }
+    return "Percent line height needs a single numeric font size to convert to pixels.";
+  }
+  if (lineHeight.unit === "AUTO") {
+    return "Auto line height is not supported yet.";
+  }
+  return "Only pixel or percent line height is supported yet.";
+}
+
+function resolveTextLetterSpacingValue(letterSpacing: LetterSpacing | undefined, numericFontSize: number | null): number | string | null {
+  if (!letterSpacing) {
+    return null;
+  }
+  if (letterSpacing.unit === "PIXELS" && typeof letterSpacing.value === "number") {
+    return letterSpacing.value;
+  }
+  if (letterSpacing.unit === "PERCENT" && typeof letterSpacing.value === "number") {
+    if (numericFontSize !== null) {
+      return percentTypographyValueToPixels(numericFontSize, letterSpacing.value);
+    }
+    return "Percent letter spacing needs a single numeric font size to convert to pixels.";
+  }
+  return "Only pixel or percent letter spacing is supported yet.";
+}
+
+function shouldSkipDefaultTextNumericValue(property: BindableProperty, value: number): boolean {
+  if (!isZeroValue(value)) {
+    return false;
+  }
+
+  return (
+    property === "letterSpacing" ||
+    property === "paragraphSpacing" ||
+    property === "paragraphIndent"
+  );
+}
+
+function toTextRange(candidate: MatchCandidate): { start: number; end: number } | undefined {
+  if (candidate.rangeStart === undefined || candidate.rangeEnd === undefined) {
+    return undefined;
+  }
+  return {
+    start: candidate.rangeStart,
+    end: candidate.rangeEnd
+  };
+}
+
+function buildTextRangeDisplayNodeName(nodeName: string, rangeIndex: number, textSlice: string): string {
+  const preview = truncateTextRangeLabel(textSlice);
+  return `${nodeName} [Range ${rangeIndex}: ${preview}]`;
+}
+
+function buildTextRangePathNodeName(nodeName: string, rangeIndex: number): string {
+  return `${nodeName}/text-range-${rangeIndex}`;
+}
+
+function truncateTextRangeLabel(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "range";
+  }
+  return normalized.length > 24 ? `${normalized.slice(0, 24).trim()}…` : normalized;
+}
+
+function getPaintSupportDetails(
+  paints: Paint[],
+  paintKind: "fill" | "stroke"
+): {
+  kind: "empty" | "single-solid" | "unsupported";
+  paint?: SolidPaint;
+  reason?: string;
+} {
+  const visiblePaints = paints.filter((paint) => paint.visible !== false);
+  if (visiblePaints.length === 0) {
+    return { kind: "empty" };
+  }
+
+  const solidPaints = visiblePaints.filter((paint): paint is SolidPaint => paint.type === "SOLID");
+  const gradientPaints = visiblePaints.filter((paint) => paint.type.includes("GRADIENT"));
+  const imagePaints = visiblePaints.filter((paint) => paint.type === "IMAGE");
+  const otherPaints = visiblePaints.filter((paint) =>
+    paint.type !== "SOLID" && !paint.type.includes("GRADIENT") && paint.type !== "IMAGE"
+  );
+
+  if (visiblePaints.length > 1) {
+    return {
+      kind: "unsupported",
+      reason: `Multiple visible ${paintKind}s are not supported yet.`
+    };
+  }
+
+  if (solidPaints.length === 1 && gradientPaints.length === 0 && imagePaints.length === 0 && otherPaints.length === 0) {
+    return {
+      kind: "single-solid",
+      paint: solidPaints[0]
+    };
+  }
+
+  if (gradientPaints.length > 0) {
+    return {
+      kind: "unsupported",
+      reason: `Gradient ${paintKind}s are not supported yet.`
+    };
+  }
+
+  if (imagePaints.length > 0) {
+    return {
+      kind: "unsupported",
+      reason: `Image ${paintKind}s are not supported yet.`
+    };
+  }
+
+  return {
+    kind: "unsupported",
+    reason: `Only single solid ${paintKind}s are supported.`
+  };
+}
+
+async function getExistingBindingName(
+  node: SceneNode,
+  property: BindableProperty,
+  rangeStart?: number,
+  rangeEnd?: number
+): Promise<string | null> {
+  const binding = extractExistingBinding(node, property, rangeStart, rangeEnd);
   if (!binding) {
     return null;
   }
@@ -596,8 +1238,39 @@ async function getExistingBindingName(node: SceneNode, property: BindablePropert
 
 function extractExistingBinding(
   node: SceneNode,
-  property: BindableProperty
+  property: BindableProperty,
+  rangeStart?: number,
+  rangeEnd?: number
 ): { id: string } | null {
+  if (
+    node.type === "TEXT" &&
+    rangeStart !== undefined &&
+    rangeEnd !== undefined &&
+    (
+      property === "fontSize" ||
+      property === "fontFamily" ||
+      property === "fontWeight" ||
+      property === "lineHeight" ||
+      property === "letterSpacing" ||
+      property === "paragraphSpacing" ||
+      property === "paragraphIndent"
+    )
+  ) {
+    const textNode = node as TextNode & {
+      getRangeBoundVariable?: (
+        start: number,
+        end: number,
+        field: "fontFamily" | "fontSize" | "fontWeight" | "lineHeight" | "letterSpacing" | "paragraphSpacing" | "paragraphIndent"
+      ) => VariableAlias | null | undefined;
+    };
+    if (textNode.getRangeBoundVariable) {
+      const binding = textNode.getRangeBoundVariable(rangeStart, rangeEnd, property);
+      if (binding && typeof binding === "object" && "id" in binding) {
+        return binding;
+      }
+    }
+  }
+
   const anyNode = node as SceneNode & {
     boundVariables?: Record<string, VariableAlias | VariableAlias[] | Record<string, VariableAlias> | undefined>;
   };
@@ -662,13 +1335,57 @@ function findVariableMatch(
   return null;
 }
 
+function findExistingVariableByPath(
+  fullPath: string,
+  variableIndex: Map<string, VariableLookupEntry[]>
+): VariableLookupEntry | null {
+  const normalizedPath = normalizeTokenPath(fullPath);
+  return variableIndex.get(normalizedPath)?.[0] ?? null;
+}
+
 function buildCandidatePaths(
   collectionKind: CollectionKind,
   pathContext: PathContext,
   node: SceneNode,
   property: BindableProperty
 ): string[] {
-  return [buildComponentPath(collectionKind, pathContext, node, property)];
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+
+  const pushPath = (componentName: string, variantSegments: VariantSegment[]) => {
+    const path = buildComponentPath(collectionKind, { componentName, variantSegments }, node, property);
+    if (!seen.has(path)) {
+      seen.add(path);
+      candidates.push(path);
+    }
+  };
+
+  pushPath(pathContext.componentName, pathContext.variantSegments);
+
+  if (pathContext.variantSegments.length > 0) {
+    pushPath(pathContext.componentName, []);
+  }
+
+  const componentPrefixes = getComponentNamePrefixes(pathContext.componentName);
+  for (const prefix of componentPrefixes) {
+    pushPath(prefix, []);
+  }
+
+  return candidates;
+}
+
+function getComponentNamePrefixes(componentName: string): string[] {
+  const segments = componentName
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const prefixes: string[] = [];
+
+  for (let index = segments.length - 1; index > 0; index -= 1) {
+    prefixes.push(segments.slice(0, index).join("/"));
+  }
+
+  return prefixes;
 }
 
 function buildComponentPath(
@@ -678,7 +1395,8 @@ function buildComponentPath(
   property: BindableProperty
 ): string {
   const componentLeaf = getComponentLeaf(node, {
-    node: null as unknown as ComponentNode,
+    node: null as unknown as SceneNode,
+    ownerComponent: null as unknown as ComponentNode,
     componentName: pathContext.componentName,
     variantSegments: pathContext.variantSegments
   }, property);
@@ -797,10 +1515,117 @@ function getCollectionKind(property: BindableProperty): CollectionKind {
   if (property === "fills.color" || property === "strokes.color") {
     return "colors";
   }
-  if (property === "fontSize" || property === "fontFamily" || property === "fontWeight") {
+  if (
+    property === "fontSize" ||
+    property === "fontFamily" ||
+    property === "fontWeight" ||
+    property === "lineHeight" ||
+    property === "letterSpacing" ||
+    property === "paragraphSpacing" ||
+    property === "paragraphIndent"
+  ) {
     return "typography";
   }
   return "device";
+}
+
+function getPropertyFamily(property: BindableProperty): PropertyFamily {
+  if (property === "fills.color") {
+    return "colors";
+  }
+  if (
+    property === "fontSize" ||
+    property === "fontFamily" ||
+    property === "fontWeight" ||
+    property === "lineHeight" ||
+    property === "letterSpacing" ||
+    property === "paragraphSpacing" ||
+    property === "paragraphIndent"
+  ) {
+    return "typography";
+  }
+  if (property === "strokes.color" || property === "strokeWeight") {
+    return "border";
+  }
+  if (property === "opacity") {
+    return "opacity";
+  }
+  if (
+    property === "paddingTop" ||
+    property === "paddingRight" ||
+    property === "paddingBottom" ||
+    property === "paddingLeft" ||
+    property === "itemSpacing"
+  ) {
+    return "spacing";
+  }
+  if (
+    property === "topLeftRadius" ||
+    property === "topRightRadius" ||
+    property === "bottomLeftRadius" ||
+    property === "bottomRightRadius"
+  ) {
+    return "radius";
+  }
+  return "size";
+}
+
+function getScanModeForProperty(property: BindableProperty, settings: ScanSettings): ScanMode {
+  const collectionKind = getCollectionKind(property);
+  if (collectionKind === "colors") {
+    return settings.colorsScanMode;
+  }
+  if (collectionKind === "typography") {
+    return settings.typographyScanMode;
+  }
+  return settings.deviceScanMode;
+}
+
+function shouldIncludeBindableForSettings(
+  node: SceneNode,
+  component: PreparedComponent,
+  property: BindableProperty,
+  settings: ScanSettings
+): boolean {
+  if (!settings.enabledFamilies[getPropertyFamily(property)]) {
+    return false;
+  }
+
+  const scanMode = getScanModeForProperty(property, settings);
+  return shouldIncludeNodeForMode(node, component, scanMode, settings);
+}
+
+function shouldIncludeSkippedForSettings(
+  node: SceneNode,
+  component: PreparedComponent,
+  property: BindableProperty,
+  settings: ScanSettings
+): boolean {
+  if (!settings.enabledFamilies[getPropertyFamily(property)]) {
+    return false;
+  }
+
+  const scanMode = getScanModeForProperty(property, settings);
+  return shouldIncludeNodeForMode(node, component, scanMode, settings);
+}
+
+function shouldIncludeNodeForMode(
+  node: SceneNode,
+  component: PreparedComponent,
+  scanMode: ScanMode,
+  settings: ScanSettings
+): boolean {
+  if (node.id === component.node.id) {
+    return true;
+  }
+
+  if (scanMode === "selected-objects") {
+    return false;
+  }
+  if (scanMode === "selected-objects-with-internal-layers") {
+    return true;
+  }
+  return hasSemanticLayerName(node, settings);
 }
 
 function getComponentLeaf(node: SceneNode, component: PreparedComponent, property: BindableProperty): string {
@@ -856,6 +1681,18 @@ function getTypographyLeaf(property: BindableProperty): string {
   }
   if (property === "fontFamily") {
     return "font-family";
+  }
+  if (property === "lineHeight") {
+    return "line-height";
+  }
+  if (property === "letterSpacing") {
+    return "letter-spacing";
+  }
+  if (property === "paragraphSpacing") {
+    return "paragraph-spacing";
+  }
+  if (property === "paragraphIndent") {
+    return "paragraph-indent";
   }
   return "font-weight";
 }
@@ -947,9 +1784,16 @@ async function executeBindings(message: ConfirmMessage): Promise<SummaryResponse
   const variableIndex = buildVariableIndex(variables, collectionById);
   seedBaseColorNames(variableIndex, collectionById);
 
+  if (message.executionMode === "dry-run") {
+    return buildDryRunSummary(message, collections, variableIndex);
+  }
+
   let bound = 0;
+  let created = 0;
   let skipped = 0;
   const errors: string[] = [];
+  const shouldBind = message.executionMode !== "create-only";
+  const shouldCreate = message.executionMode !== "bind-only";
 
   for (const readyId of message.readyIds) {
     const candidate = analysisState.get(readyId);
@@ -967,8 +1811,12 @@ async function executeBindings(message: ConfirmMessage): Promise<SummaryResponse
       if (!node) {
         throw new Error(`Missing node ${candidate.nodeName}`);
       }
-      await bindVariableToNode(node as SceneNode, candidate.property, variable);
-      bound += 1;
+      if (shouldBind) {
+        await bindVariableToNode(node as SceneNode, candidate.property, variable, toTextRange(candidate));
+        bound += 1;
+      } else {
+        skipped += 1;
+      }
     } catch (error) {
       errors.push(`${candidate.nodeName} · ${candidate.property}: ${formatError(error)}`);
     }
@@ -986,8 +1834,17 @@ async function executeBindings(message: ConfirmMessage): Promise<SummaryResponse
       if (!node) {
         throw new Error(`Missing node ${candidate.nodeName}`);
       }
+      if (shouldSkipNewVariableCreation(candidate, node as SceneNode)) {
+        skipped += 1;
+        continue;
+      }
 
-      const variable = await ensureVariableForCandidate(
+      if (!shouldCreate) {
+        skipped += 1;
+        continue;
+      }
+
+      const result = await ensureVariableForCandidate(
         candidate,
         {
           createBaseVariables: message.createBaseVariables,
@@ -999,8 +1856,78 @@ async function executeBindings(message: ConfirmMessage): Promise<SummaryResponse
         collections,
         variableIndex
       );
-      await bindVariableToNode(node as SceneNode, candidate.property, variable);
-      bound += 1;
+      created += result.createdCount;
+      if (shouldBind) {
+        await bindVariableToNode(node as SceneNode, candidate.property, result.variable, toTextRange(candidate));
+        bound += 1;
+      }
+    } catch (error) {
+      errors.push(`${candidate.nodeName} · ${candidate.property}: ${formatError(error)}`);
+    }
+  }
+
+  for (const conflict of message.conflicts) {
+    const candidate = analysisState.get(conflict.id);
+    if (!candidate) {
+      skipped += 1;
+      continue;
+    }
+
+    if (conflict.action === "skip") {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      const node = await figma.getNodeByIdAsync(candidate.nodeId);
+      if (!node) {
+        throw new Error(`Missing node ${candidate.nodeName}`);
+      }
+
+      if (conflict.action === "reuse-existing") {
+        const existing = findExistingVariableByPath(conflict.pathKind === "base"
+          ? candidate.proposedBasePath
+          : conflict.pathKind === "semantic"
+            ? candidate.proposedSemanticPath
+            : candidate.proposedComponentPath, variableIndex);
+        if (!existing) {
+          throw new Error("Existing conflict variable is missing.");
+        }
+        await bindVariableToNode(node as SceneNode, candidate.property, existing.variable, toTextRange(candidate));
+        bound += 1;
+        continue;
+      }
+
+      if (!shouldCreate) {
+        skipped += 1;
+        continue;
+      }
+
+      const resolvedBasePath = conflict.pathKind === "base" ? conflict.proposedPath : candidate.proposedBasePath;
+      const resolvedSemanticPath = conflict.action === "create-deeper-semantic"
+        ? conflict.fallbackPath || candidate.proposedSemanticPath
+        : conflict.pathKind === "semantic"
+          ? conflict.proposedPath
+          : candidate.proposedSemanticPath;
+      const resolvedComponentPath = conflict.pathKind === "component" ? conflict.proposedPath : candidate.proposedComponentPath;
+
+      const result = await ensureVariableForCandidate(
+        candidate,
+        {
+          createBaseVariables: message.createBaseVariables,
+          basePath: resolvedBasePath,
+          semanticPath: resolvedSemanticPath,
+          componentPath: resolvedComponentPath,
+          variantProperties: candidate.variantProperties
+        },
+        collections,
+        variableIndex
+      );
+      created += result.createdCount;
+      if (shouldBind) {
+        await bindVariableToNode(node as SceneNode, candidate.property, result.variable, toTextRange(candidate));
+        bound += 1;
+      }
     } catch (error) {
       errors.push(`${candidate.nodeName} · ${candidate.property}: ${formatError(error)}`);
     }
@@ -1008,10 +1935,151 @@ async function executeBindings(message: ConfirmMessage): Promise<SummaryResponse
 
   return {
     type: "summary",
+    executionMode: message.executionMode,
     bound,
+    created,
     skipped,
     errors
   };
+}
+
+async function buildDryRunSummary(
+  message: ConfirmMessage,
+  collections: VariableCollection[],
+  variableIndex: Map<string, VariableLookupEntry[]>
+): Promise<SummaryResponse> {
+  let skipped = 0;
+  let plannedBound = 0;
+  let plannedCreated = 0;
+  const errors: string[] = [];
+  const simulatedPaths = new Set<string>(variableIndex.keys());
+
+  for (const readyId of message.readyIds) {
+    const candidate = analysisState.get(readyId);
+    if (!candidate || !candidate.matchedVariableId) {
+      skipped += 1;
+      continue;
+    }
+    plannedBound += 1;
+  }
+
+  for (const unmatched of message.unmatched) {
+    const candidate = analysisState.get(unmatched.id);
+    if (!candidate || unmatched.skip) {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      const node = await figma.getNodeByIdAsync(candidate.nodeId);
+      if (!node) {
+        throw new Error(`Missing node ${candidate.nodeName}`);
+      }
+      if (shouldSkipNewVariableCreation(candidate, node as SceneNode)) {
+        skipped += 1;
+        continue;
+      }
+      plannedCreated += estimateCreatedPathsForCandidate(
+        candidate,
+        unmatched.basePath,
+        unmatched.semanticPath,
+        unmatched.componentPath,
+        message.createBaseVariables,
+        variableIndex,
+        simulatedPaths
+      );
+      plannedBound += 1;
+    } catch (error) {
+      errors.push(`${candidate.nodeName} · ${candidate.property}: ${formatError(error)}`);
+    }
+  }
+
+  for (const conflict of message.conflicts) {
+    const candidate = analysisState.get(conflict.id);
+    if (!candidate || conflict.action === "skip") {
+      skipped += 1;
+      continue;
+    }
+
+    if (conflict.action === "reuse-existing") {
+      plannedBound += 1;
+      continue;
+    }
+
+    const semanticPath = conflict.action === "create-deeper-semantic"
+      ? conflict.fallbackPath || candidate.proposedSemanticPath
+      : conflict.pathKind === "semantic"
+        ? conflict.proposedPath
+        : candidate.proposedSemanticPath;
+    const basePath = conflict.pathKind === "base" ? conflict.proposedPath : candidate.proposedBasePath;
+    const componentPath = conflict.pathKind === "component" ? conflict.proposedPath : candidate.proposedComponentPath;
+
+    plannedCreated += estimateCreatedPathsForCandidate(
+      candidate,
+      basePath,
+      semanticPath,
+      componentPath,
+      message.createBaseVariables,
+      variableIndex,
+      simulatedPaths
+    );
+    plannedBound += 1;
+  }
+
+  return {
+    type: "summary",
+    executionMode: "dry-run",
+    bound: 0,
+    created: 0,
+    skipped,
+    plannedBound,
+    plannedCreated,
+    errors
+  };
+}
+
+function estimateCreatedPathsForCandidate(
+  candidate: MatchCandidate,
+  basePath: string,
+  semanticPath: string,
+  componentPath: string,
+  createBaseVariables: boolean,
+  variableIndex: Map<string, VariableLookupEntry[]>,
+  simulatedPaths: Set<string>
+): number {
+  let created = 0;
+
+  if (createBaseVariables) {
+    created += addSimulatedPath(basePath, simulatedPaths, variableIndex);
+    if (candidate.collectionKind === "colors") {
+      const ladder = collectBaseColorAlphaLadder(variableIndex);
+      ladder.add(colorAlphaPercent(candidate.rawValue as RGBA | RGB));
+      const colorEntries = collectBaseColorEntries(variableIndex);
+      for (const colorName of colorEntries.keys()) {
+        for (const alpha of ladder) {
+          const ladderPath = normalizeTokenPath(`colors/base/${colorName}/${alpha}`);
+          created += addSimulatedPath(ladderPath, simulatedPaths, variableIndex);
+        }
+      }
+    }
+  }
+
+  created += addSimulatedPath(semanticPath, simulatedPaths, variableIndex);
+  created += addSimulatedPath(componentPath, simulatedPaths, variableIndex);
+  return created;
+}
+
+function addSimulatedPath(
+  fullPath: string,
+  simulatedPaths: Set<string>,
+  variableIndex: Map<string, VariableLookupEntry[]>
+): number {
+  const normalizedPath = normalizeTokenPath(fullPath);
+  if (simulatedPaths.has(normalizedPath) || variableIndex.has(normalizedPath)) {
+    return 0;
+  }
+  simulatedPaths.add(normalizedPath);
+  return 1;
 }
 
 async function ensureVariableForCandidate(
@@ -1025,7 +2093,7 @@ async function ensureVariableForCandidate(
   },
   collections: VariableCollection[],
   variableIndex: Map<string, VariableLookupEntry[]>
-): Promise<Variable> {
+): Promise<{ variable: Variable; createdCount: number }> {
   const selectedVariantSegments = candidate.pathVariantSegments.filter((segment) =>
     options.variantProperties.includes(segment.property)
   );
@@ -1036,56 +2104,218 @@ async function ensureVariableForCandidate(
 
   const componentPath = normalizeTokenPath(options.componentPath || buildComponentPath(candidate.collectionKind, pathContext, {
     id: candidate.nodeId,
-    name: candidate.nodeName
+    name: candidate.pathNodeName
   } as SceneNode, candidate.property));
   const semanticPath = normalizeTokenPath(options.semanticPath || buildSemanticPath(candidate.collectionKind, pathContext, {
     id: candidate.nodeId,
-    name: candidate.nodeName
+    name: candidate.pathNodeName
   } as SceneNode, candidate.property, candidate.rawValue));
   const basePath = normalizeTokenPath(options.basePath || buildBasePath(candidate.collectionKind, candidate.property, candidate.rawValue));
 
   let baseVariable: Variable | null = null;
+  let createdCount = 0;
   if (options.createBaseVariables) {
-    baseVariable = await ensureChainVariable(basePath, candidate, collections, variableIndex, {
+    const baseResult = await ensureChainVariable(basePath, candidate, collections, variableIndex, {
       kind: "base",
       rawValue: candidate.rawValue
     });
-    await ensureGlobalColorBaseLadder(candidate, collections, variableIndex);
+    baseVariable = baseResult.variable;
+    createdCount += baseResult.created ? 1 : 0;
+    createdCount += await ensureGlobalColorBaseLadder(candidate, collections, variableIndex);
   }
 
   let resolvedSemanticPath = semanticPath;
   let semanticVariable: Variable;
   try {
-    semanticVariable = await ensureChainVariable(semanticPath, candidate, collections, variableIndex, {
+    const semanticResult = await ensureChainVariable(semanticPath, candidate, collections, variableIndex, {
       kind: "semantic",
       rawValue: candidate.rawValue,
       aliasTarget: baseVariable
     });
+    semanticVariable = semanticResult.variable;
+    createdCount += semanticResult.created ? 1 : 0;
   } catch (error) {
     if (!(error instanceof Error) || !error.message.startsWith("Conflict at")) {
       throw error;
     }
     resolvedSemanticPath = buildScopedSemanticPath(candidate.collectionKind, pathContext, {
       id: candidate.nodeId,
-      name: candidate.nodeName
+      name: candidate.pathNodeName
     } as SceneNode, candidate.property, candidate.rawValue);
-    semanticVariable = await ensureChainVariable(resolvedSemanticPath, candidate, collections, variableIndex, {
+    const semanticResult = await ensureChainVariable(resolvedSemanticPath, candidate, collections, variableIndex, {
       kind: "semantic",
       rawValue: candidate.rawValue,
       aliasTarget: baseVariable
     });
+    semanticVariable = semanticResult.variable;
+    createdCount += semanticResult.created ? 1 : 0;
   }
 
-  const componentVariable = await ensureChainVariable(componentPath, candidate, collections, variableIndex, {
+  const componentResult = await ensureChainVariable(componentPath, candidate, collections, variableIndex, {
     kind: "component",
     rawValue: candidate.rawValue,
     aliasTarget: semanticVariable
   });
+  createdCount += componentResult.created ? 1 : 0;
 
   candidate.proposedBasePath = basePath;
   candidate.proposedSemanticPath = resolvedSemanticPath;
   candidate.proposedComponentPath = componentPath;
-  return componentVariable;
+  return { variable: componentResult.variable, createdCount };
+}
+
+async function preflightConflicts(
+  candidates: MatchCandidate[],
+  collections: VariableCollection[],
+  variableIndex: Map<string, VariableLookupEntry[]>
+): Promise<UIConflictItem[]> {
+  const conflicts: UIConflictItem[] = [];
+
+  for (const candidate of candidates) {
+    const result = await preflightCandidateConflict(candidate, collections, variableIndex);
+    if (result) {
+      conflicts.push({
+        id: candidate.id,
+        label: `${candidate.nodeName} · ${candidate.property}`,
+        path: result.path,
+        reason: result.reason,
+        pathKind: result.pathKind,
+        chainLevelLabel: getConflictChainLevelLabel(result.pathKind),
+        proposedPath: result.proposedPath,
+        fallbackPath: result.fallbackPath,
+        resolvedPreviewPath: result.proposedPath,
+        action: "skip"
+      });
+    }
+  }
+
+  return conflicts;
+}
+
+async function preflightCandidateConflict(
+  candidate: MatchCandidate,
+  collections: VariableCollection[],
+  variableIndex: Map<string, VariableLookupEntry[]>
+): Promise<{
+  path: string;
+  reason: string;
+  pathKind: "base" | "semantic" | "component";
+  proposedPath: string;
+  fallbackPath?: string;
+} | null> {
+  const baseResult = await inspectExistingPathConflict(candidate.proposedBasePath, candidate, collections, variableIndex, {
+    kind: "base",
+    rawValue: candidate.rawValue
+  });
+  if (baseResult) {
+    return baseResult;
+  }
+
+  const semanticResult = await inspectExistingPathConflict(
+    candidate.proposedSemanticPath,
+    candidate,
+    collections,
+    variableIndex,
+    {
+      kind: "semantic",
+      rawValue: candidate.rawValue,
+      aliasTarget: null
+    }
+  );
+  if (semanticResult) {
+    const fallbackPath = buildScopedSemanticPath(
+      candidate.collectionKind,
+      {
+        componentName: candidate.pathComponentName,
+        variantSegments: candidate.pathVariantSegments
+      },
+      { id: candidate.nodeId, name: candidate.pathNodeName } as SceneNode,
+      candidate.property,
+      candidate.rawValue
+    );
+    const fallbackResult = await inspectExistingPathConflict(
+      fallbackPath,
+      candidate,
+      collections,
+      variableIndex,
+      {
+        kind: "semantic",
+        rawValue: candidate.rawValue,
+        aliasTarget: null
+      }
+    );
+    if (fallbackResult) {
+      return fallbackResult;
+    }
+    return {
+      ...semanticResult,
+      fallbackPath: normalizeTokenPath(fallbackPath) !== normalizeTokenPath(candidate.proposedSemanticPath)
+        ? normalizeTokenPath(fallbackPath)
+        : undefined
+    };
+  }
+
+  const componentResult = await inspectExistingPathConflict(
+    candidate.proposedComponentPath,
+    candidate,
+    collections,
+    variableIndex,
+    {
+      kind: "component",
+      rawValue: candidate.rawValue,
+      aliasTarget: null
+    }
+  );
+  if (componentResult) {
+    return componentResult;
+  }
+
+  return null;
+}
+
+async function inspectExistingPathConflict(
+  fullPath: string,
+  candidate: MatchCandidate,
+  collections: VariableCollection[],
+  variableIndex: Map<string, VariableLookupEntry[]>,
+  options: {
+    kind: "base" | "semantic" | "component";
+    rawValue: RawValue;
+    aliasTarget?: Variable | null;
+  }
+): Promise<{
+  path: string;
+  reason: string;
+  pathKind: "base" | "semantic" | "component";
+  proposedPath: string;
+} | null> {
+  const normalizedPath = normalizeTokenPath(fullPath);
+  const existingByPath = variableIndex.get(normalizedPath)?.[0];
+  if (!existingByPath) {
+    return null;
+  }
+
+  try {
+    await validateExistingVariableFit(existingByPath.variable, candidate, collections, options);
+    return null;
+  } catch (error) {
+    return {
+      path: `${existingByPath.collectionName}/${existingByPath.variable.name}`,
+      reason: formatError(error).replace(/^Conflict at [^:]+:\s*/, ""),
+      pathKind: options.kind,
+      proposedPath: normalizedPath
+    };
+  }
+}
+
+function getConflictChainLevelLabel(pathKind: "base" | "semantic" | "component"): string {
+  if (pathKind === "base") {
+    return "Base";
+  }
+  if (pathKind === "semantic") {
+    return "Semantic";
+  }
+  return "Component";
 }
 
 async function ensureChainVariable(
@@ -1098,12 +2328,12 @@ async function ensureChainVariable(
     rawValue: RawValue;
     aliasTarget?: Variable | null;
   }
-): Promise<Variable> {
+): Promise<{ variable: Variable; created: boolean }> {
   const normalizedPath = normalizeTokenPath(fullPath);
   const existingByPath = variableIndex.get(normalizedPath)?.[0];
   if (existingByPath) {
-    validateExistingVariableFit(existingByPath.variable, candidate, collections, options);
-    return existingByPath.variable;
+    await validateExistingVariableFit(existingByPath.variable, candidate, collections, options);
+    return { variable: existingByPath.variable, created: false };
   }
 
   const segments = normalizedPath.split("/").filter(Boolean);
@@ -1123,7 +2353,7 @@ async function ensureChainVariable(
     );
     if (reused) {
       insertVariableIntoIndex(variableIndex, reused, collection);
-      return reused;
+      return { variable: reused, created: false };
     }
   }
 
@@ -1137,10 +2367,10 @@ async function ensureChainVariable(
     variable.setValueForMode(modeId, toVariableValue(options.rawValue, candidate.resolvedType));
   }
 
-  return variable;
+  return { variable, created: true };
 }
 
-function validateExistingVariableFit(
+async function validateExistingVariableFit(
   variable: Variable,
   candidate: MatchCandidate,
   collections: VariableCollection[],
@@ -1149,7 +2379,7 @@ function validateExistingVariableFit(
     rawValue: RawValue;
     aliasTarget?: Variable | null;
   }
-): void {
+): Promise<void> {
   const collection = collections.find((item) => item.id === variable.variableCollectionId);
   if (!collection) {
     return;
@@ -1159,10 +2389,25 @@ function validateExistingVariableFit(
   const currentValue = variable.valuesByMode[modeId];
 
   if (options.aliasTarget) {
-    if (!currentValue || typeof currentValue !== "object" || !("id" in currentValue) || currentValue.id !== options.aliasTarget.id) {
-      throw new Error(`Conflict at ${collection.name}/${variable.name}: existing alias does not match expected chain`);
+    if (!currentValue || typeof currentValue !== "object" || !("id" in currentValue)) {
+      throw new Error(`Conflict at ${collection.name}/${variable.name}: existing value is not an alias`);
     }
-    return;
+
+    if (currentValue.id === options.aliasTarget.id) {
+      return;
+    }
+
+    const existingAliasTarget = await figma.variables.getVariableByIdAsync(currentValue.id);
+    if (
+      existingAliasTarget &&
+      await haveCompatibleResolvedValues(existingAliasTarget, options.aliasTarget, collections, candidate.resolvedType)
+    ) {
+      return;
+    }
+
+    throw new Error(
+      `Conflict at ${collection.name}/${variable.name}: existing alias points to ${describeAliasTarget(existingAliasTarget, currentValue.id, collections)} instead of ${describeAliasTarget(options.aliasTarget, options.aliasTarget.id, collections)}`
+    );
   }
 
   if (
@@ -1171,6 +2416,55 @@ function validateExistingVariableFit(
   ) {
     throw new Error(`Conflict at ${collection.name}/${variable.name}: existing value does not match new value`);
   }
+}
+
+async function haveCompatibleResolvedValues(
+  first: Variable,
+  second: Variable,
+  collections: VariableCollection[],
+  resolvedType: VariableResolvedDataType
+): Promise<boolean> {
+  const firstValue = await resolveVariableComparableValue(first, collections, resolvedType, new Set<string>());
+  const secondValue = await resolveVariableComparableValue(second, collections, resolvedType, new Set<string>());
+  return firstValue !== null && secondValue !== null && firstValue === secondValue;
+}
+
+async function resolveVariableComparableValue(
+  variable: Variable,
+  collections: VariableCollection[],
+  resolvedType: VariableResolvedDataType,
+  seen: Set<string>
+): Promise<string | null> {
+  if (seen.has(variable.id)) {
+    return null;
+  }
+  seen.add(variable.id);
+
+  const collection = collections.find((item) => item.id === variable.variableCollectionId);
+  if (!collection) {
+    return null;
+  }
+
+  const modeId = getDefaultModeId(collection);
+  const value = variable.valuesByMode[modeId];
+  if (value && typeof value === "object" && "id" in value) {
+    const aliasTarget = await figma.variables.getVariableByIdAsync(value.id);
+    if (!aliasTarget) {
+      return null;
+    }
+    return resolveVariableComparableValue(aliasTarget, collections, resolvedType, seen);
+  }
+
+  return getComparableVariableValue(value as RawValue, resolvedType);
+}
+
+function describeAliasTarget(variable: Variable | null, fallbackId: string, collections: VariableCollection[]): string {
+  if (!variable) {
+    return fallbackId;
+  }
+
+  const collection = collections.find((item) => item.id === variable.variableCollectionId);
+  return collection ? `${collection.name}/${variable.name}` : variable.name;
 }
 
 function getOrCreateCollection(collections: VariableCollection[], collectionName: string): VariableCollection {
@@ -1242,14 +2536,15 @@ async function ensureGlobalColorBaseLadder(
   candidate: MatchCandidate,
   collections: VariableCollection[],
   variableIndex: Map<string, VariableLookupEntry[]>
-): Promise<void> {
+): Promise<number> {
   if (candidate.collectionKind !== "colors") {
-    return;
+    return 0;
   }
 
   const ladder = collectBaseColorAlphaLadder(variableIndex);
   ladder.add(colorAlphaPercent(candidate.rawValue as RGBA | RGB));
   const colorEntries = collectBaseColorEntries(variableIndex);
+  let createdCount = 0;
 
   for (const [colorName, rgbHex] of colorEntries.entries()) {
     const rgb = hexToRgb(rgbHex);
@@ -1267,12 +2562,15 @@ async function ensureGlobalColorBaseLadder(
         b: rgb.b,
         a: alpha / 100
       };
-      await ensureChainVariable(ladderPath, candidate, collections, variableIndex, {
+      const result = await ensureChainVariable(ladderPath, candidate, collections, variableIndex, {
         kind: "base",
         rawValue: colorValue
       });
+      createdCount += result.created ? 1 : 0;
     }
   }
+
+  return createdCount;
 }
 
 function collectBaseColorAlphaLadder(variableIndex: Map<string, VariableLookupEntry[]>): Set<number> {
@@ -1322,13 +2620,16 @@ function hexToRgb(hex: string): RGB {
   };
 }
 
-function buildSharedPropertyIndex(components: PreparedComponent[]): SharedPropertyIndex {
+function buildSharedPropertyIndex(components: PreparedComponent[], scanSettings: ScanSettings): SharedPropertyIndex {
   const observations = new Map<string, Map<string, SharedObservation>>();
 
   for (const component of components) {
     for (const node of walkNodes(component.node)) {
-      const bindables = extractBindableFields(node);
+      const bindables = extractBindableFields(node).items;
       for (const bindable of bindables) {
+        if (!shouldIncludeBindableForSettings(node, component, bindable.property, scanSettings)) {
+          continue;
+        }
         const leaf = getSharedLeaf(node, component, bindable.property);
         const key = `${leaf}|${bindable.property}`;
         const componentValues = observations.get(key) ?? new Map<string, SharedObservation>();
@@ -1473,7 +2774,12 @@ function hasMatchingSharedValue(
     getComparableRawValue(rawValue, resolvedType).length > 0;
 }
 
-async function bindVariableToNode(node: SceneNode, property: BindableProperty, variable: Variable): Promise<void> {
+async function bindVariableToNode(
+  node: SceneNode,
+  property: BindableProperty,
+  variable: Variable,
+  range?: { start: number; end: number }
+): Promise<void> {
   if (property === "fills.color") {
     if (!("fills" in node) || !Array.isArray(node.fills)) {
       throw new Error("Node does not support fill binding.");
@@ -1506,12 +2812,23 @@ async function bindVariableToNode(node: SceneNode, property: BindableProperty, v
     return;
   }
 
-  if (node.type === "TEXT" && (property === "fontSize" || property === "fontFamily" || property === "fontWeight")) {
+  if (
+    node.type === "TEXT" &&
+    (
+      property === "fontSize" ||
+      property === "fontFamily" ||
+      property === "fontWeight" ||
+      property === "lineHeight" ||
+      property === "letterSpacing" ||
+      property === "paragraphSpacing" ||
+      property === "paragraphIndent"
+    )
+  ) {
     const textNode = node as TextNode & {
       setRangeBoundVariable?: (
         start: number,
         end: number,
-        field: "fontFamily" | "fontSize" | "fontWeight",
+        field: "fontFamily" | "fontSize" | "fontWeight" | "lineHeight" | "letterSpacing" | "paragraphSpacing" | "paragraphIndent",
         variable: Variable
       ) => void;
     };
@@ -1520,7 +2837,7 @@ async function bindVariableToNode(node: SceneNode, property: BindableProperty, v
     }
 
     if (textNode.setRangeBoundVariable) {
-      textNode.setRangeBoundVariable(0, textNode.characters.length, property, variable);
+      textNode.setRangeBoundVariable(range?.start ?? 0, range?.end ?? textNode.characters.length, property, variable);
       return;
     }
   }
@@ -1720,6 +3037,10 @@ function shouldUseLayerAndPropertyLeaf(property: BindableProperty, layerSegment:
     property === "fontSize" ||
     property === "fontFamily" ||
     property === "fontWeight" ||
+    property === "lineHeight" ||
+    property === "letterSpacing" ||
+    property === "paragraphSpacing" ||
+    property === "paragraphIndent" ||
     property === "paddingTop" ||
     property === "paddingRight" ||
     property === "paddingBottom" ||
@@ -1747,9 +3068,90 @@ function getNumericNodeValue(node: SceneNode, field: string): number | null {
   return typeof value === "number" ? value : null;
 }
 
-function isHugDimension(node: SceneNode, axis: "horizontal" | "vertical"): boolean {
+function shouldSkipDimensionVariable(node: SceneNode, axis: "horizontal" | "vertical"): boolean {
   const field = axis === "horizontal" ? "layoutSizingHorizontal" : "layoutSizingVertical";
-  return (node as SceneNode & Record<string, unknown>)[field] === "HUG";
+  const value = (node as SceneNode & Record<string, unknown>)[field];
+  return value === "HUG" || value === "FILL";
+}
+
+function hasSemanticLayerName(node: SceneNode, settings: ScanSettings): boolean {
+  const normalized = normalizeSegment(node.name);
+  if (!normalized) {
+    return false;
+  }
+
+  if (matchesSemanticDenylist(normalized, settings.semanticDenylist)) {
+    return false;
+  }
+
+  if (/^(vector|group|frame|rectangle|ellipse|polygon|line|star)(-\d+)?$/.test(normalized)) {
+    return false;
+  }
+
+  if (settings.semanticAllowlist.length > 0) {
+    return matchesSemanticAllowlist(normalized, settings.semanticAllowlist);
+  }
+
+  return true;
+}
+
+function matchesSemanticAllowlist(normalizedName: string, allowlist: string[]): boolean {
+  return allowlist.some((entry) => {
+    const normalizedEntry = normalizeSegment(entry);
+    return normalizedEntry && (normalizedName === normalizedEntry || normalizedName.startsWith(`${normalizedEntry}-`));
+  });
+}
+
+function matchesSemanticDenylist(normalizedName: string, denylist: string[]): boolean {
+  return denylist.some((entry) => {
+    const normalizedEntry = normalizeSegment(entry);
+    return normalizedEntry && (normalizedName === normalizedEntry || normalizedName.startsWith(`${normalizedEntry}-`));
+  });
+}
+
+function shouldSkipNewVariableCreation(candidate: MatchCandidate, node: SceneNode): boolean {
+  if (candidate.resolvedType !== "FLOAT") {
+    return false;
+  }
+
+  const numericValue = typeof candidate.rawValue === "number" ? candidate.rawValue : null;
+  if (numericValue === null) {
+    return false;
+  }
+
+  if ((candidate.property === "width" || candidate.property === "height") && isFillDimension(node, candidate.property)) {
+    return true;
+  }
+
+  return isZeroCreateOnlyProperty(candidate.property) && isZeroValue(numericValue);
+}
+
+function isFillDimension(node: SceneNode, property: BindableProperty): boolean {
+  if (property !== "width" && property !== "height") {
+    return false;
+  }
+
+  const field = property === "width" ? "layoutSizingHorizontal" : "layoutSizingVertical";
+  return (node as SceneNode & Record<string, unknown>)[field] === "FILL";
+}
+
+function isZeroCreateOnlyProperty(property: BindableProperty): boolean {
+  return (
+    property === "itemSpacing" ||
+    property === "paddingTop" ||
+    property === "paddingRight" ||
+    property === "paddingBottom" ||
+    property === "paddingLeft" ||
+    property === "topLeftRadius" ||
+    property === "topRightRadius" ||
+    property === "bottomLeftRadius" ||
+    property === "bottomRightRadius" ||
+    property === "strokeWeight"
+  );
+}
+
+function isZeroValue(value: number): boolean {
+  return Math.abs(value) < 0.0001;
 }
 
 function isPaddingProperty(property: BindableProperty): boolean {

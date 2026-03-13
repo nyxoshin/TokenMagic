@@ -1,212 +1,130 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>TokenMagic</title>
-    <style>
-      :root {
-        color-scheme: light dark;
-        --bg: #111318;
-        --panel: #1b1f27;
-        --panel-alt: #232936;
-        --text: #f5f7fb;
-        --muted: #aab3c5;
-        --accent: #7dd3a7;
-        --accent-strong: #48b67d;
-        --border: rgba(255, 255, 255, 0.09);
-        --danger: #ff8e8e;
-      }
 
-      * {
-        box-sizing: border-box;
-      }
+<head>
+  <meta charset="utf-8" />
+  <title>TokenMagic</title>
+  <link rel="stylesheet" href="ui.css" />
+</head>
 
-      body {
-        margin: 0;
-        font: 13px/1.4 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background:
-          radial-gradient(circle at top right, rgba(125, 211, 167, 0.18), transparent 30%),
-          linear-gradient(180deg, #101318 0%, #0c0f14 100%);
-        color: var(--text);
-      }
-
-      .app {
-        padding: 16px;
-        display: grid;
-        gap: 14px;
-      }
-
-      .hero,
-      .panel {
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
-        backdrop-filter: blur(8px);
-      }
-
-      .hero {
-        padding: 16px;
-      }
-
-      h1,
-      h2,
-      p {
-        margin: 0;
-      }
-
-      h1 {
-        font-size: 18px;
-        font-weight: 700;
-      }
-
-      .subtle {
-        margin-top: 6px;
-        color: var(--muted);
-      }
-
-      .panel {
-        padding: 14px;
-        display: grid;
-        gap: 12px;
-      }
-
-      .section-title {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 8px;
-      }
-
-      .section-title span {
-        color: var(--muted);
-        font-size: 12px;
-      }
-
-      .list {
-        display: grid;
-        gap: 10px;
-      }
-
-      .row {
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        background: rgba(255, 255, 255, 0.03);
-        padding: 10px 12px;
-        display: grid;
-        gap: 8px;
-      }
-
-      .row-head {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-
-      .row-head input[type="checkbox"] {
-        margin: 0;
-      }
-
-      .label {
-        font-weight: 600;
-      }
-
-      .path,
-      .raw {
-        color: var(--muted);
-        word-break: break-word;
-      }
-
-      input[type="text"] {
-        width: 100%;
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        background: var(--panel-alt);
-        color: var(--text);
-        padding: 10px 12px;
-      }
-
-      .chips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-
-      .chip {
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        padding: 6px 10px;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        background: rgba(255, 255, 255, 0.04);
-      }
-
-      .actions {
-        display: flex;
-        justify-content: flex-end;
-      }
-
-      button {
-        appearance: none;
-        border: 0;
-        border-radius: 999px;
-        padding: 12px 16px;
-        font: inherit;
-        font-weight: 700;
-        cursor: pointer;
-      }
-
-      .primary {
-        background: linear-gradient(180deg, var(--accent), var(--accent-strong));
-        color: #092112;
-      }
-
-      .empty,
-      .summary {
-        color: var(--muted);
-      }
-
-      .errors {
-        display: grid;
-        gap: 8px;
-        color: var(--danger);
-      }
-    </style>
-  </head>
-  <body>
-    <div class="app">
-      <section class="hero">
-        <h1>TokenMagic</h1>
+<body>
+  <div class="app">
+    <div class="shell">
+      <main class="content">
+        <section class="topbar">
+          <div class="topbar-title">
+            <h1 class="wordmark">TokenMagic</h1>
+          </div>
+        </section>
         <p id="selection-summary" class="subtle">Reading selection…</p>
-      </section>
+        <section class="panel">
+          <div class="section-title">
+            <h2>Settings</h2>
+          </div>
+          <div class="stack">
+            <label class="setting-label">
+              <span>Component preset</span>
+              <select id="component-preset">
+                <option value="general" selected>General</option>
+                <option value="button">Buttons</option>
+                <option value="icon">Icons</option>
+                <option value="form-control">Form controls</option>
+                <option value="text-only">Text only</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <label class="setting-label">
+              <span>Execution mode</span>
+              <select id="execution-mode">
+                <option value="create-and-bind" selected>Create and bind</option>
+                <option value="dry-run">Dry run</option>
+                <option value="create-only">Create only</option>
+                <option value="bind-only">Bind only</option>
+              </select>
+            </label>
+            <label class="setting-label">
+              <span>Colors scan scope</span>
+              <select id="colors-scan-mode">
+                <option value="selected-objects">Selection only</option>
+                <option value="selected-objects-with-internal-layers">Selection + internal layers</option>
+                <option value="selected-objects-with-semantic-internal-layers" selected>Selection + semantic internal
+                  layers</option>
+              </select>
+            </label>
+            <label class="setting-label">
+              <span>Typography scan scope</span>
+              <select id="typography-scan-mode">
+                <option value="selected-objects">Selection only</option>
+                <option value="selected-objects-with-internal-layers">Selection + internal layers</option>
+                <option value="selected-objects-with-semantic-internal-layers" selected>Selection + semantic internal
+                  layers</option>
+              </select>
+            </label>
+            <label class="setting-label">
+              <span>Device scan scope</span>
+              <select id="device-scan-mode">
+                <option value="selected-objects" selected>Selection only</option>
+                <option value="selected-objects-with-internal-layers">Selection + internal layers</option>
+                <option value="selected-objects-with-semantic-internal-layers">Selection + semantic internal layers
+                </option>
+              </select>
+            </label>
+            <div class="setting-help">
+              Semantic internal layers include named UI parts like <code>label</code>, <code>icon</code>,
+              <code>bg</code>, and <code>border</code>.
+              Use the lists below to tighten or relax what semantic mode includes.
+            </div>
+            <label class="setting-label">
+              <span>Semantic allowlist</span>
+              <textarea id="semantic-allowlist" rows="3" placeholder="label, icon, bg, border"></textarea>
+            </label>
+            <label class="setting-label">
+              <span>Semantic denylist</span>
+              <textarea id="semantic-denylist" rows="4"
+                placeholder="vector, group, path, primary, secondary"></textarea>
+            </label>
+            <div class="chips" id="family-toggles"></div>
+            <label class="chip">
+              <input id="create-base-toggle" type="checkbox" checked />
+              <span>Create missing base variables</span>
+            </label>
+          </div>
+        </section>
 
-      <section class="panel">
-        <div class="section-title">
-          <h2>Ready to bind</h2>
-          <span id="ready-count">0 items</span>
-        </div>
-        <div id="ready-list" class="list"></div>
-      </section>
+        <section class="panel">
+          <div class="section-title">
+            <h2>Ready to bind</h2>
+            <span id="ready-count">0 items</span>
+          </div>
+          <div id="ready-list" class="list"></div>
+        </section>
 
-      <section class="panel">
-        <div class="section-title">
-          <h2>Unmatched</h2>
-          <span id="unmatched-count">0 items</span>
-        </div>
-        <div id="unmatched-list" class="list"></div>
-      </section>
+        <section class="panel">
+          <div class="section-title">
+            <h2>Unmatched</h2>
+            <span id="unmatched-count">0 items</span>
+          </div>
+          <div id="unmatched-list" class="list"></div>
+        </section>
 
-      <section class="panel">
-        <div class="section-title">
-          <h2>Settings</h2>
-        </div>
-        <label class="chip">
-          <input id="create-base-toggle" type="checkbox" checked />
-          <span>Create missing base variables</span>
-        </label>
-      </section>
+        <section class="panel">
+          <div class="section-title">
+            <h2>Conflicts</h2>
+            <span id="conflicts-count">0 items</span>
+          </div>
+          <div id="conflicts-list" class="list"></div>
+        </section>
 
-      <section class="panel">
+        <section class="panel">
+          <div class="section-title">
+            <h2>Skipped / unsupported</h2>
+            <span id="skipped-count">0 items</span>
+          </div>
+          <div id="skipped-list" class="list"></div>
+        </section>
+      </main>
+
+      <section class="footer">
         <div id="summary" class="summary">Waiting for selection.</div>
         <div id="errors" class="errors"></div>
         <div class="actions">
@@ -214,85 +132,278 @@
         </div>
       </section>
     </div>
+  </div>
 
-    <script>
-      const state = {
-        ready: [],
-        unmatched: []
-      };
+  <script>
+    const FAMILY_LABELS = {
+      colors: "Colors",
+      typography: "Typography",
+      spacing: "Spacing",
+      radius: "Radius",
+      size: "Size",
+      border: "Border",
+      opacity: "Opacity"
+    };
 
-      const readyList = document.getElementById("ready-list");
-      const unmatchedList = document.getElementById("unmatched-list");
-      const readyCount = document.getElementById("ready-count");
-      const unmatchedCount = document.getElementById("unmatched-count");
-      const summary = document.getElementById("summary");
-      const selectionSummary = document.getElementById("selection-summary");
-      const errors = document.getElementById("errors");
-      const confirmButton = document.getElementById("confirm");
-      const createBaseToggle = document.getElementById("create-base-toggle");
+    const DEFAULT_DENYLIST = ["vector", "group", "path", "primary", "secondary"];
 
-      window.onmessage = (event) => {
-        const message = event.data.pluginMessage;
-        if (!message) {
-          return;
-        }
+    const PRESETS = {
+      general: {
+        colorsScanMode: "selected-objects-with-internal-layers",
+        typographyScanMode: "selected-objects-with-semantic-internal-layers",
+        deviceScanMode: "selected-objects",
+        enabledFamilies: {
+          colors: true,
+          typography: true,
+          spacing: true,
+          radius: true,
+          size: true,
+          border: true,
+          opacity: true
+        },
+        semanticAllowlist: [],
+        semanticDenylist: DEFAULT_DENYLIST
+      },
+      button: {
+        colorsScanMode: "selected-objects-with-semantic-internal-layers",
+        typographyScanMode: "selected-objects-with-semantic-internal-layers",
+        deviceScanMode: "selected-objects",
+        enabledFamilies: {
+          colors: true,
+          typography: true,
+          spacing: true,
+          radius: true,
+          size: true,
+          border: true,
+          opacity: true
+        },
+        semanticAllowlist: ["label", "icon", "bg", "border", "surface", "container"],
+        semanticDenylist: DEFAULT_DENYLIST
+      },
+      icon: {
+        colorsScanMode: "selected-objects-with-internal-layers",
+        typographyScanMode: "selected-objects",
+        deviceScanMode: "selected-objects",
+        enabledFamilies: {
+          colors: true,
+          typography: false,
+          spacing: false,
+          radius: false,
+          size: false,
+          border: true,
+          opacity: false
+        },
+        semanticAllowlist: [],
+        semanticDenylist: DEFAULT_DENYLIST
+      },
+      "form-control": {
+        colorsScanMode: "selected-objects-with-semantic-internal-layers",
+        typographyScanMode: "selected-objects-with-semantic-internal-layers",
+        deviceScanMode: "selected-objects-with-semantic-internal-layers",
+        enabledFamilies: {
+          colors: true,
+          typography: true,
+          spacing: true,
+          radius: true,
+          size: true,
+          border: true,
+          opacity: true
+        },
+        semanticAllowlist: ["label", "icon", "bg", "border", "surface", "container", "thumb", "track", "input", "value", "placeholder", "helper"],
+        semanticDenylist: DEFAULT_DENYLIST
+      },
+      "text-only": {
+        colorsScanMode: "selected-objects-with-semantic-internal-layers",
+        typographyScanMode: "selected-objects-with-semantic-internal-layers",
+        deviceScanMode: "selected-objects",
+        enabledFamilies: {
+          colors: true,
+          typography: true,
+          spacing: false,
+          radius: false,
+          size: false,
+          border: false,
+          opacity: false
+        },
+        semanticAllowlist: ["text", "label", "value", "title", "body", "caption"],
+        semanticDenylist: DEFAULT_DENYLIST
+      }
+    };
 
-        if (message.type === "analysis") {
-          state.ready = message.ready;
-          state.unmatched = message.unmatched;
-          renderAnalysis(message);
-          return;
-        }
+    const state = {
+      ready: [],
+      unmatched: [],
+      skippedItems: [],
+      conflicts: [],
+      preset: "general",
+      executionMode: "create-and-bind",
+      settings: {
+        colorsScanMode: "selected-objects-with-internal-layers",
+        typographyScanMode: "selected-objects-with-semantic-internal-layers",
+        deviceScanMode: "selected-objects",
+        enabledFamilies: {
+          colors: true,
+          typography: true,
+          spacing: true,
+          radius: true,
+          size: true,
+          border: true,
+          opacity: true
+        },
+        semanticAllowlist: [],
+        semanticDenylist: DEFAULT_DENYLIST
+      }
+    };
 
-        if (message.type === "summary") {
-          renderSummary(message);
-        }
-      };
+    const readyList = document.getElementById("ready-list");
+    const unmatchedList = document.getElementById("unmatched-list");
+    const skippedList = document.getElementById("skipped-list");
+    const conflictsList = document.getElementById("conflicts-list");
+    const readyCount = document.getElementById("ready-count");
+    const unmatchedCount = document.getElementById("unmatched-count");
+    const skippedCount = document.getElementById("skipped-count");
+    const conflictsCount = document.getElementById("conflicts-count");
+    const summary = document.getElementById("summary");
+    const selectionSummary = document.getElementById("selection-summary");
+    const errors = document.getElementById("errors");
+    const confirmButton = document.getElementById("confirm");
+    const createBaseToggle = document.getElementById("create-base-toggle");
+    const componentPresetSelect = document.getElementById("component-preset");
+    const executionModeSelect = document.getElementById("execution-mode");
+    const colorsScanModeSelect = document.getElementById("colors-scan-mode");
+    const typographyScanModeSelect = document.getElementById("typography-scan-mode");
+    const deviceScanModeSelect = document.getElementById("device-scan-mode");
+    const semanticAllowlistInput = document.getElementById("semantic-allowlist");
+    const semanticDenylistInput = document.getElementById("semantic-denylist");
+    const familyToggles = document.getElementById("family-toggles");
 
-      confirmButton.addEventListener("click", () => {
-        parent.postMessage(
-          {
-            pluginMessage: {
-              type: "confirm-bind",
-              readyIds: state.ready.filter((item) => item.checked).map((item) => item.id),
-              createBaseVariables: createBaseToggle.checked,
-              unmatched: state.unmatched.map((item) => ({
-                id: item.id,
-                basePath: item.basePath,
-                semanticPath: item.semanticPath,
-                componentPath: item.componentPath,
-                skip: Boolean(item.skip),
-                variantProperties: item.selectedVariantProperties
-              }))
-            }
-          },
-          "*"
-        );
-      });
-
-      function renderAnalysis(message) {
-        selectionSummary.textContent = message.selectionSummary;
-        summary.textContent = message.skippedBound
-          ? `${message.skippedBound} properties were already bound and left unchanged.`
-          : "Review the bind queue, then confirm.";
-        errors.textContent = "";
-        renderReady();
-        renderUnmatched();
+    window.onmessage = (event) => {
+      const message = event.data.pluginMessage;
+      if (!message) {
+        return;
       }
 
-      function renderReady() {
-        readyList.innerHTML = "";
-        readyCount.textContent = `${state.ready.length} item${state.ready.length === 1 ? "" : "s"}`;
+      if (message.type === "analysis") {
+        state.ready = message.ready;
+        state.unmatched = message.unmatched;
+        state.skippedItems = message.skippedItems || [];
+        state.conflicts = message.conflicts || [];
+        state.settings = message.settings || state.settings;
+        renderAnalysis(message);
+        return;
+      }
 
-        if (!state.ready.length) {
-          readyList.innerHTML = '<div class="empty">No existing token matches were found.</div>';
-          return;
-        }
+      if (message.type === "summary") {
+        renderSummary(message);
+      }
+    };
 
-        for (const item of state.ready) {
-          const row = document.createElement("label");
-          row.className = "row";
-          row.innerHTML = `
+    confirmButton.addEventListener("click", () => {
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "confirm-bind",
+            executionMode: state.executionMode,
+            readyIds: state.ready.filter((item) => item.checked).map((item) => item.id),
+            createBaseVariables: createBaseToggle.checked,
+            unmatched: state.unmatched.map((item) => ({
+              id: item.id,
+              basePath: item.basePath,
+              semanticPath: item.semanticPath,
+              componentPath: item.componentPath,
+              skip: Boolean(item.skip),
+              variantProperties: item.selectedVariantProperties
+            })),
+            conflicts: state.conflicts.map((item) => ({
+              id: item.id,
+              action: item.action,
+              proposedPath: item.proposedPath,
+              pathKind: item.pathKind,
+              fallbackPath: item.fallbackPath
+            }))
+          }
+        },
+        "*"
+      );
+    });
+
+    colorsScanModeSelect.addEventListener("change", () => {
+      state.settings.colorsScanMode = colorsScanModeSelect.value;
+      markPresetCustom();
+      requestAnalysis();
+    });
+
+    typographyScanModeSelect.addEventListener("change", () => {
+      state.settings.typographyScanMode = typographyScanModeSelect.value;
+      markPresetCustom();
+      requestAnalysis();
+    });
+
+    deviceScanModeSelect.addEventListener("change", () => {
+      state.settings.deviceScanMode = deviceScanModeSelect.value;
+      markPresetCustom();
+      requestAnalysis();
+    });
+
+    executionModeSelect.addEventListener("change", () => {
+      state.executionMode = executionModeSelect.value;
+    });
+
+    componentPresetSelect.addEventListener("change", () => {
+      const value = componentPresetSelect.value;
+      if (value === "custom") {
+        state.preset = "custom";
+        return;
+      }
+      applyPreset(value);
+    });
+
+    semanticAllowlistInput.addEventListener("change", () => {
+      state.settings.semanticAllowlist = parseSettingsList(semanticAllowlistInput.value);
+      markPresetCustom();
+      requestAnalysis();
+    });
+
+    semanticDenylistInput.addEventListener("change", () => {
+      state.settings.semanticDenylist = parseSettingsList(semanticDenylistInput.value);
+      markPresetCustom();
+      requestAnalysis();
+    });
+
+
+    function renderAnalysis(message) {
+      componentPresetSelect.value = state.preset;
+      executionModeSelect.value = state.executionMode;
+      colorsScanModeSelect.value = state.settings.colorsScanMode;
+      typographyScanModeSelect.value = state.settings.typographyScanMode;
+      deviceScanModeSelect.value = state.settings.deviceScanMode;
+      semanticAllowlistInput.value = formatSettingsList(state.settings.semanticAllowlist);
+      semanticDenylistInput.value = formatSettingsList(state.settings.semanticDenylist);
+      selectionSummary.textContent = message.selectionSummary;
+      summary.textContent = message.skippedBound
+        ? `${message.skippedBound} properties were already bound and left unchanged.`
+        : "Review the bind queue, then confirm.";
+      errors.textContent = "";
+      renderFamilyToggles();
+      renderReady();
+      renderUnmatched();
+      renderSkipped();
+      renderConflicts();
+    }
+
+    function renderReady() {
+      readyList.innerHTML = "";
+      readyCount.textContent = `${state.ready.length} item${state.ready.length === 1 ? "" : "s"}`;
+
+      if (!state.ready.length) {
+        readyList.innerHTML = '<div class="empty">No existing token matches were found.</div>';
+        return;
+      }
+
+      for (const item of state.ready) {
+        const row = document.createElement("label");
+        row.className = "row";
+        row.innerHTML = `
             <div class="row-head">
               <input type="checkbox" ${item.checked ? "checked" : ""} />
               <div class="label">${escapeHtml(item.label)}</div>
@@ -300,33 +411,38 @@
             <div class="path">${escapeHtml(item.path)}</div>
           `;
 
-          const checkbox = row.querySelector("input");
-          checkbox.addEventListener("change", () => {
-            item.checked = checkbox.checked;
-          });
-          readyList.appendChild(row);
-        }
+        const checkbox = row.querySelector("input");
+        checkbox.addEventListener("change", () => {
+          item.checked = checkbox.checked;
+        });
+        readyList.appendChild(row);
+      }
+    }
+
+    function renderUnmatched() {
+      unmatchedList.innerHTML = "";
+      unmatchedCount.textContent = `${state.unmatched.length} item${state.unmatched.length === 1 ? "" : "s"}`;
+
+      if (!state.unmatched.length) {
+        unmatchedList.innerHTML = '<div class="empty">Everything that can be matched is already queued.</div>';
+        return;
       }
 
-      function renderUnmatched() {
-        unmatchedList.innerHTML = "";
-        unmatchedCount.textContent = `${state.unmatched.length} item${state.unmatched.length === 1 ? "" : "s"}`;
-
-        if (!state.unmatched.length) {
-          unmatchedList.innerHTML = '<div class="empty">Everything that can be matched is already queued.</div>';
-          return;
-        }
-
-        for (const item of state.unmatched) {
-          const row = document.createElement("div");
-          row.className = "row";
-          row.innerHTML = `
+      for (const item of state.unmatched) {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML = `
             <div class="label">${escapeHtml(item.label)}</div>
             <div class="path">Collection: ${escapeHtml(item.collectionKind)}</div>
             <div class="raw">Current value: ${escapeHtml(item.rawValue)}</div>
-            <input type="text" data-field="base" value="${escapeAttribute(item.basePath)}" />
-            <input type="text" data-field="semantic" value="${escapeAttribute(item.semanticPath)}" />
-            <input type="text" data-field="component" value="${escapeAttribute(item.componentPath)}" />
+            <div class="field-grid">
+              <div class="field-label">Base path</div>
+              <input type="text" data-field="base" value="${escapeAttribute(item.basePath)}" />
+              <div class="field-label">Semantic path</div>
+              <input type="text" data-field="semantic" value="${escapeAttribute(item.semanticPath)}" />
+              <div class="field-label">Component path</div>
+              <input type="text" data-field="component" value="${escapeAttribute(item.componentPath)}" />
+            </div>
             <div class="chips"></div>
             <label class="chip">
               <input type="checkbox" ${item.skip ? "checked" : ""} />
@@ -334,71 +450,248 @@
             </label>
           `;
 
-          const baseInput = row.querySelector('input[data-field="base"]');
-          const semanticInput = row.querySelector('input[data-field="semantic"]');
-          const componentInput = row.querySelector('input[data-field="component"]');
-          baseInput.addEventListener("input", () => {
-            item.basePath = baseInput.value;
-          });
-          semanticInput.addEventListener("input", () => {
-            item.semanticPath = semanticInput.value;
-          });
-          componentInput.addEventListener("input", () => {
-            item.componentPath = componentInput.value;
-          });
+        const baseInput = row.querySelector('input[data-field="base"]');
+        const semanticInput = row.querySelector('input[data-field="semantic"]');
+        const componentInput = row.querySelector('input[data-field="component"]');
+        baseInput.addEventListener("input", () => {
+          item.basePath = baseInput.value;
+        });
+        semanticInput.addEventListener("input", () => {
+          item.semanticPath = semanticInput.value;
+        });
+        componentInput.addEventListener("input", () => {
+          item.componentPath = componentInput.value;
+        });
 
-          const chips = row.querySelector(".chips");
-          for (const property of item.variantProperties) {
-            const chip = document.createElement("label");
-            chip.className = "chip";
-            chip.innerHTML = `
+        const chips = row.querySelector(".chips");
+        for (const property of item.variantProperties) {
+          const chip = document.createElement("label");
+          chip.className = "chip";
+          chip.innerHTML = `
               <input type="checkbox" ${item.selectedVariantProperties.includes(property) ? "checked" : ""} />
               <span>${escapeHtml(property)}</span>
             `;
-            const checkbox = chip.querySelector("input");
-            checkbox.addEventListener("change", () => {
-              if (checkbox.checked) {
-                if (!item.selectedVariantProperties.includes(property)) {
-                  item.selectedVariantProperties.push(property);
-                }
-              } else {
-                item.selectedVariantProperties = item.selectedVariantProperties.filter((value) => value !== property);
+          const checkbox = chip.querySelector("input");
+          checkbox.addEventListener("change", () => {
+            if (checkbox.checked) {
+              if (!item.selectedVariantProperties.includes(property)) {
+                item.selectedVariantProperties.push(property);
               }
-            });
-            chips.appendChild(chip);
-          }
-
-          const skipCheckbox = row.querySelectorAll('input[type="checkbox"]')[item.variantProperties.length ? item.variantProperties.length + 1 : 1];
-          skipCheckbox.addEventListener("change", () => {
-            item.skip = skipCheckbox.checked;
+            } else {
+              item.selectedVariantProperties = item.selectedVariantProperties.filter((value) => value !== property);
+            }
           });
-
-          unmatchedList.appendChild(row);
+          chips.appendChild(chip);
         }
+
+        const skipCheckbox = row.querySelectorAll('input[type="checkbox"]')[item.variantProperties.length ? item.variantProperties.length + 1 : 1];
+        skipCheckbox.addEventListener("change", () => {
+          item.skip = skipCheckbox.checked;
+        });
+
+        unmatchedList.appendChild(row);
+      }
+    }
+
+    function renderSkipped() {
+      skippedList.innerHTML = "";
+      skippedCount.textContent = `${state.skippedItems.length} item${state.skippedItems.length === 1 ? "" : "s"}`;
+
+      if (!state.skippedItems.length) {
+        skippedList.innerHTML = '<div class="empty">No properties were skipped by the current rules.</div>';
+        return;
       }
 
-      function renderSummary(message) {
+      for (const item of state.skippedItems) {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML = `
+            <div class="label">${escapeHtml(item.label)}</div>
+            <div class="raw">${escapeHtml(item.reason)}</div>
+          `;
+        skippedList.appendChild(row);
+      }
+    }
+
+    function renderConflicts() {
+      conflictsList.innerHTML = "";
+      conflictsCount.textContent = `${state.conflicts.length} item${state.conflicts.length === 1 ? "" : "s"}`;
+
+      if (!state.conflicts.length) {
+        conflictsList.innerHTML = '<div class="empty">No preflight conflicts were detected.</div>';
+        return;
+      }
+
+      for (const item of state.conflicts) {
+        const row = document.createElement("div");
+        const canCreateDeeperSemantic = item.pathKind === "semantic" && item.fallbackPath && item.fallbackPath !== item.proposedPath;
+        item.resolvedPreviewPath = getConflictResolvedPath(item);
+        row.className = "row";
+        row.innerHTML = `
+            <div class="label">${escapeHtml(item.label)}</div>
+            <div class="raw">Conflicting level: ${escapeHtml(item.chainLevelLabel)}</div>
+            <div class="path">${escapeHtml(item.path)}</div>
+            <div class="raw">${escapeHtml(item.reason)}</div>
+            <div class="field-label">Resolution</div>
+            <select data-field="action">
+              <option value="skip" ${item.action === "skip" ? "selected" : ""}>Skip</option>
+              <option value="reuse-existing" ${item.action === "reuse-existing" ? "selected" : ""}>Reuse existing</option>
+              ${canCreateDeeperSemantic
+            ? `<option value="create-deeper-semantic" ${item.action === "create-deeper-semantic" ? "selected" : ""}>Create deeper semantic token</option>`
+            : ""}
+              <option value="rename-proposed" ${item.action === "rename-proposed" ? "selected" : ""}>Rename proposed</option>
+            </select>
+            <div class="field-grid">
+              <div class="field-label">Proposed path</div>
+              <input type="text" data-field="proposed-path" value="${escapeAttribute(item.proposedPath)}" />
+            </div>
+            ${canCreateDeeperSemantic
+            ? `<div class="raw">Deeper semantic path: <span class="path-inline">${escapeHtml(item.fallbackPath)}</span></div>`
+            : ""}
+            <div class="raw">Final path: <span class="path-inline" data-field="resolved-preview">${escapeHtml(item.resolvedPreviewPath)}</span></div>
+          `;
+
+        const actionSelect = row.querySelector('select[data-field="action"]');
+        const pathInput = row.querySelector('input[data-field="proposed-path"]');
+        const pathField = pathInput.parentElement;
+        const resolvedPreview = row.querySelector('[data-field="resolved-preview"]');
+        pathField.style.display = item.action === "rename-proposed" ? "grid" : "none";
+
+        actionSelect.addEventListener("change", () => {
+          item.action = actionSelect.value;
+          pathField.style.display = item.action === "rename-proposed" ? "grid" : "none";
+          item.resolvedPreviewPath = getConflictResolvedPath(item);
+          resolvedPreview.textContent = item.resolvedPreviewPath;
+        });
+        pathInput.addEventListener("input", () => {
+          item.proposedPath = pathInput.value;
+          item.resolvedPreviewPath = getConflictResolvedPath(item);
+          resolvedPreview.textContent = item.resolvedPreviewPath;
+        });
+
+        conflictsList.appendChild(row);
+      }
+    }
+
+    function getConflictResolvedPath(item) {
+      if (item.action === "reuse-existing") {
+        return item.path;
+      }
+      if (item.action === "create-deeper-semantic" && item.fallbackPath) {
+        return item.fallbackPath;
+      }
+      return item.proposedPath;
+    }
+
+    function renderFamilyToggles() {
+      familyToggles.innerHTML = "";
+
+      for (const [family, label] of Object.entries(FAMILY_LABELS)) {
+        const chip = document.createElement("label");
+        chip.className = "chip";
+        chip.innerHTML = `
+            <input type="checkbox" ${state.settings.enabledFamilies[family] ? "checked" : ""} />
+            <span>${escapeHtml(label)}</span>
+          `;
+        const checkbox = chip.querySelector("input");
+        checkbox.addEventListener("change", () => {
+          state.settings.enabledFamilies[family] = checkbox.checked;
+          markPresetCustom();
+          requestAnalysis();
+        });
+        familyToggles.appendChild(chip);
+      }
+    }
+
+    function renderSummary(message) {
+      if (message.executionMode === "dry-run") {
+        summary.textContent = `Dry run: ${message.plannedCreated || 0} variables would be created, ${message.plannedBound || 0} bindings would be applied, ${message.skipped} skipped, ${message.errors.length} errors.`;
+      } else if (message.executionMode === "create-only") {
+        summary.textContent = `${message.created} variables created, ${message.skipped} skipped, ${message.errors.length} errors.`;
+      } else if (message.executionMode === "bind-only") {
         summary.textContent = `${message.bound} bound successfully, ${message.skipped} skipped, ${message.errors.length} errors.`;
-        errors.innerHTML = "";
-
-        for (const error of message.errors) {
-          const row = document.createElement("div");
-          row.textContent = error;
-          errors.appendChild(row);
-        }
+      } else {
+        summary.textContent = `${message.created} variables created, ${message.bound} bound successfully, ${message.skipped} skipped, ${message.errors.length} errors.`;
       }
+      errors.innerHTML = "";
 
-      function escapeHtml(value) {
-        return String(value)
-          .replaceAll("&", "&amp;")
-          .replaceAll("<", "&lt;")
-          .replaceAll(">", "&gt;")
-          .replaceAll('"', "&quot;");
+      for (const error of message.errors) {
+        const row = document.createElement("div");
+        row.textContent = error;
+        errors.appendChild(row);
       }
+    }
 
-      function escapeAttribute(value) {
-        return escapeHtml(value).replaceAll("'", "&#39;");
+    function requestAnalysis() {
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "request-analysis",
+            settings: {
+              colorsScanMode: state.settings.colorsScanMode,
+              typographyScanMode: state.settings.typographyScanMode,
+              deviceScanMode: state.settings.deviceScanMode,
+              enabledFamilies: state.settings.enabledFamilies,
+              semanticAllowlist: state.settings.semanticAllowlist,
+              semanticDenylist: state.settings.semanticDenylist
+            }
+          }
+        },
+        "*"
+      );
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function escapeAttribute(value) {
+      return escapeHtml(value).replaceAll("'", "&#39;");
+    }
+
+    function parseSettingsList(value) {
+      return value
+        .split(/[\n,]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+
+    function formatSettingsList(values) {
+      return values.join(", ");
+    }
+
+    function applyPreset(name) {
+      const preset = PRESETS[name];
+      if (!preset) {
+        return;
       }
-    </script>
-  </body>
+      state.preset = name;
+      state.settings = cloneSettings(preset);
+      requestAnalysis();
+    }
+
+    function cloneSettings(settings) {
+      return {
+        colorsScanMode: settings.colorsScanMode,
+        typographyScanMode: settings.typographyScanMode,
+        deviceScanMode: settings.deviceScanMode,
+        enabledFamilies: { ...settings.enabledFamilies },
+        semanticAllowlist: [...settings.semanticAllowlist],
+        semanticDenylist: [...settings.semanticDenylist]
+      };
+    }
+
+    function markPresetCustom() {
+      if (state.preset !== "custom") {
+        state.preset = "custom";
+        componentPresetSelect.value = "custom";
+      }
+    }
+  </script>
+</body>
+
 </html>

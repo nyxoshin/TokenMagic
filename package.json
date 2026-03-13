@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "tsc && cp src/ui.html dist/ui.html",
+    "build": "tsc && node scripts/build-ui.mjs",
     "watch": "tsc --watch --preserveWatchOutput"
   },
   "devDependencies": {
