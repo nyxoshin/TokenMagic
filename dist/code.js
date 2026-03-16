@@ -1,12 +1,17 @@
 "use strict";
-const UI_WIDTH = 440;
-const UI_HEIGHT = 720;
+const UI_WIDTH = 1200;
+const UI_HEIGHT = 760;
 const COMPONENT_SEGMENT = "component";
 const MATCHABLE_NODE_TYPES = new Set(["COMPONENT", "COMPONENT_SET"]);
 const PROPERTY_ALIASES = {
     "fills.color": ["bg", "fill", "color", "background"],
-    "strokes.color": ["border", "stroke", "stroke-color"],
-    strokeWeight: ["stroke-weight", "border-width"],
+    "strokes.color": ["stroke", "border", "stroke-color"],
+    strokeWeight: ["stroke", "stroke-weight", "border-width"],
+    "effects.color": ["effect-color", "shadow-color"],
+    "effects.radius": ["effect-radius", "shadow-radius", "blur-radius"],
+    "effects.spread": ["effect-spread", "shadow-spread"],
+    "effects.offsetX": ["effect-offset-x", "shadow-offset-x"],
+    "effects.offsetY": ["effect-offset-y", "shadow-offset-y"],
     opacity: ["opacity"],
     width: ["width"],
     height: ["height"],
@@ -46,6 +51,7 @@ const defaultScanSettings = {
         "primary",
         "secondary",
         "tertiary",
+        "subtract",
         "vector",
         "shape",
         "group",
@@ -85,6 +91,10 @@ figma.on("selectionchange", () => {
 });
 figma.ui.onmessage = async (message) => {
     var _a, _b, _c, _d;
+    if (message.type === "resize-ui") {
+        figma.ui.resize(message.width, message.height);
+        return;
+    }
     if (message.type === "request-analysis") {
         currentScanSettings = Object.assign(Object.assign(Object.assign({}, currentScanSettings), message.settings), { enabledFamilies: Object.assign(Object.assign({}, currentScanSettings.enabledFamilies), ((_b = (_a = message.settings) === null || _a === void 0 ? void 0 : _a.enabledFamilies) !== null && _b !== void 0 ? _b : {})), semanticAllowlist: ((_c = message.settings) === null || _c === void 0 ? void 0 : _c.semanticAllowlist)
                 ? [...message.settings.semanticAllowlist]
@@ -114,6 +124,7 @@ figma.ui.onmessage = async (message) => {
 };
 async function analyzeSelection(scanSettings) {
     analysisState.clear();
+    const debug = [];
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
     const variables = await figma.variables.getLocalVariablesAsync();
     const collectionById = new Map(collections.map((collection) => [collection.id, collection]));
@@ -124,15 +135,17 @@ async function analyzeSelection(scanSettings) {
         return {
             type: "analysis",
             ready: [],
+            alreadyBound: [],
             unmatched: [],
             skippedItems: [],
             conflicts: [],
             skippedBound: 0,
             selectionSummary: "Select a component, component set, or a layer inside a component.",
-            settings: scanSettings
+            settings: scanSettings,
+            debug
         };
     }
-    const { matches, skippedItems } = await collectMatches(preparedComponents, variableIndex, scanSettings);
+    const { matches, skippedItems } = await collectMatches(preparedComponents, variableIndex, scanSettings, debug);
     for (const match of matches) {
         analysisState.set(match.id, match);
     }
@@ -152,6 +165,16 @@ async function analyzeSelection(scanSettings) {
                 checked: true
             });
         }),
+        alreadyBound: matches
+            .filter((match) => match.skippedBecauseBound)
+            .map((match) => {
+            var _a;
+            return ({
+                id: match.id,
+                label: `${match.nodeName} · ${match.property}`,
+                path: (_a = match.existingBindingName) !== null && _a !== void 0 ? _a : ""
+            });
+        }),
         unmatched: matches
             .filter((match) => !match.matched && !match.skippedBecauseBound && !conflictIds.has(match.id))
             .map((match) => ({
@@ -169,7 +192,8 @@ async function analyzeSelection(scanSettings) {
         conflicts: conflictItems,
         skippedBound: matches.filter((match) => match.skippedBecauseBound).length,
         selectionSummary: `Prepared ${preparedComponents.length} selection target${preparedComponents.length === 1 ? "" : "s"} for binding.`,
-        settings: scanSettings
+        settings: scanSettings,
+        debug
     };
 }
 function buildVariableIndex(variables, collectionById) {
@@ -202,6 +226,9 @@ function insertVariableIntoIndex(index, variable, collection) {
 function prepareSelection(selection) {
     const prepared = [];
     for (const node of selection) {
+        if (node.type === "INSTANCE") {
+            continue;
+        }
         if (node.type === "COMPONENT_SET") {
             for (const child of node.children) {
                 if (child.type !== "COMPONENT") {
@@ -233,6 +260,9 @@ function prepareSelection(selection) {
         if (!ownerComponent) {
             continue;
         }
+        if (isNodeInsideNestedInstance(node, ownerComponent)) {
+            continue;
+        }
         const parent = ownerComponent.parent;
         const variantSegments = parent && parent.type === "COMPONENT_SET" ? extractVariantSegments(ownerComponent, parent) : [];
         const componentName = parent && parent.type === "COMPONENT_SET" ? parent.name : ownerComponent.name;
@@ -254,6 +284,16 @@ function findOwningComponent(node) {
         current = current.parent;
     }
     return null;
+}
+function isNodeInsideNestedInstance(node, ownerComponent) {
+    let current = node.parent;
+    while (current && current.id !== ownerComponent.id) {
+        if (current.type === "INSTANCE") {
+            return true;
+        }
+        current = current.parent;
+    }
+    return false;
 }
 function extractVariantSegments(componentNode, componentSet) {
     const variantProperties = componentNode.variantProperties;
@@ -325,7 +365,7 @@ function parseVariantSegments(variantName) {
     })
         .filter((segment) => segment !== null);
 }
-async function collectMatches(components, variableIndex, scanSettings) {
+async function collectMatches(components, variableIndex, scanSettings, debug) {
     const matches = [];
     const skippedItems = [];
     const skippedKeys = new Set();
@@ -333,7 +373,7 @@ async function collectMatches(components, variableIndex, scanSettings) {
     for (const component of components) {
         const nodes = walkNodes(component.node);
         for (const node of nodes) {
-            const result = await inspectNodeBindings(node, component, variableIndex, sharedPropertyIndex, scanSettings);
+            const result = await inspectNodeBindings(node, component, variableIndex, sharedPropertyIndex, scanSettings, debug);
             for (const skipped of result.skippedItems) {
                 const key = `${skipped.id}:${skipped.reason}`;
                 if (!skippedKeys.has(key)) {
@@ -348,7 +388,7 @@ async function collectMatches(components, variableIndex, scanSettings) {
     return { matches, skippedItems };
 }
 function walkNodes(root) {
-    if (root.type === "INSTANCE") {
+    if (shouldStopTraversalOnNode(root)) {
         return [];
     }
     const nodes = [root];
@@ -363,7 +403,7 @@ function walkNodes(root) {
     return nodes;
 }
 function walkDescendants(node) {
-    if (node.type === "INSTANCE") {
+    if (shouldStopTraversalOnNode(node)) {
         return [];
     }
     const nodes = [node];
@@ -377,8 +417,8 @@ function walkDescendants(node) {
     }
     return nodes;
 }
-async function inspectNodeBindings(node, component, variableIndex, sharedPropertyIndex, scanSettings) {
-    var _a, _b, _c, _d, _e, _f;
+async function inspectNodeBindings(node, component, variableIndex, sharedPropertyIndex, scanSettings, debug) {
+    var _a, _b, _c, _d, _e, _f, _g;
     const candidates = [];
     const skippedItems = [];
     const extracted = extractBindableFields(node);
@@ -393,7 +433,13 @@ async function inspectNodeBindings(node, component, variableIndex, sharedPropert
         }
     }
     for (const bindable of bindables) {
+        if (bindable.property === "strokeWeight") {
+            debug.push(`[strokeWeight] extracted node="${node.name}" component="${component.componentName}" value=${String(bindable.rawValue)}`);
+        }
         if (!shouldIncludeBindableForSettings(node, component, bindable.property, scanSettings)) {
+            if (bindable.property === "strokeWeight") {
+                debug.push(`[strokeWeight] filtered-by-settings node="${node.name}" component="${component.componentName}" mode="${getScanModeForProperty(bindable.property, scanSettings)}"`);
+            }
             continue;
         }
         const effectiveNode = bindable.pathNodeName
@@ -401,15 +447,18 @@ async function inspectNodeBindings(node, component, variableIndex, sharedPropert
             : node;
         const pathContext = getPathContext(effectiveNode, component, bindable.property, bindable.rawValue, bindable.resolvedType, sharedPropertyIndex);
         const proposedChain = buildProposedChain(pathContext, effectiveNode, bindable.property, bindable.rawValue);
-        const existingBinding = await getExistingBindingName(node, bindable.property, bindable.rangeStart, bindable.rangeEnd);
-        const candidateId = `${node.id}:${bindable.property}:${(_a = bindable.rangeStart) !== null && _a !== void 0 ? _a : "all"}:${(_b = bindable.rangeEnd) !== null && _b !== void 0 ? _b : "all"}`;
-        const candidateNodeName = (_c = bindable.displayNodeName) !== null && _c !== void 0 ? _c : node.name;
+        const existingBinding = await getExistingBindingName(node, bindable.property, bindable.rangeStart, bindable.rangeEnd, bindable.effectIndex, bindable.effectField);
+        const candidateId = `${node.id}:${bindable.property}:${(_a = bindable.rangeStart) !== null && _a !== void 0 ? _a : "all"}:${(_b = bindable.rangeEnd) !== null && _b !== void 0 ? _b : "all"}:${(_c = bindable.effectIndex) !== null && _c !== void 0 ? _c : "all"}`;
+        const candidateNodeName = (_d = bindable.displayNodeName) !== null && _d !== void 0 ? _d : node.name;
         if (existingBinding) {
+            if (bindable.property === "strokeWeight") {
+                debug.push(`[strokeWeight] already-bound node="${node.name}" binding="${existingBinding}"`);
+            }
             candidates.push({
                 id: candidateId,
                 nodeId: node.id,
                 nodeName: candidateNodeName,
-                pathNodeName: (_d = bindable.pathNodeName) !== null && _d !== void 0 ? _d : node.name,
+                pathNodeName: (_e = bindable.pathNodeName) !== null && _e !== void 0 ? _e : node.name,
                 property: bindable.property,
                 resolvedType: bindable.resolvedType,
                 rawValue: bindable.rawValue,
@@ -426,16 +475,23 @@ async function inspectNodeBindings(node, component, variableIndex, sharedPropert
                 skippedBecauseBound: true,
                 existingBindingName: existingBinding,
                 rangeStart: bindable.rangeStart,
-                rangeEnd: bindable.rangeEnd
+                rangeEnd: bindable.rangeEnd,
+                effectIndex: bindable.effectIndex,
+                effectField: bindable.effectField
             });
             continue;
         }
         const match = findVariableMatch(effectiveNode, bindable.property, pathContext, variableIndex);
+        if (bindable.property === "strokeWeight") {
+            debug.push(match
+                ? `[strokeWeight] matched node="${node.name}" path="${match.variablePath}"`
+                : `[strokeWeight] unmatched node="${node.name}" base="${proposedChain.basePath}" semantic="${proposedChain.semanticPath}" component="${proposedChain.componentPath}"`);
+        }
         candidates.push({
             id: candidateId,
             nodeId: node.id,
             nodeName: candidateNodeName,
-            pathNodeName: (_e = bindable.pathNodeName) !== null && _e !== void 0 ? _e : node.name,
+            pathNodeName: (_f = bindable.pathNodeName) !== null && _f !== void 0 ? _f : node.name,
             property: bindable.property,
             resolvedType: bindable.resolvedType,
             rawValue: bindable.rawValue,
@@ -445,7 +501,7 @@ async function inspectNodeBindings(node, component, variableIndex, sharedPropert
             matchedVariablePath: match === null || match === void 0 ? void 0 : match.variablePath,
             proposedBasePath: proposedChain.basePath,
             proposedSemanticPath: proposedChain.semanticPath,
-            proposedComponentPath: (_f = match === null || match === void 0 ? void 0 : match.variablePath) !== null && _f !== void 0 ? _f : proposedChain.componentPath,
+            proposedComponentPath: (_g = match === null || match === void 0 ? void 0 : match.variablePath) !== null && _g !== void 0 ? _g : proposedChain.componentPath,
             candidatePaths: buildCandidatePaths(proposedChain.collectionKind, pathContext, effectiveNode, bindable.property),
             variantSegments: component.variantSegments,
             variantProperties: component.variantSegments.map((segment) => segment.property),
@@ -453,7 +509,9 @@ async function inspectNodeBindings(node, component, variableIndex, sharedPropert
             pathVariantSegments: pathContext.variantSegments,
             skippedBecauseBound: false,
             rangeStart: bindable.rangeStart,
-            rangeEnd: bindable.rangeEnd
+            rangeEnd: bindable.rangeEnd,
+            effectIndex: bindable.effectIndex,
+            effectField: bindable.effectField
         });
     }
     return { candidates, skippedItems };
@@ -477,13 +535,25 @@ function extractBindableFields(node) {
         const strokeSupport = getPaintSupportDetails(strokes, "stroke");
         if (strokeSupport.kind === "single-solid" && strokeSupport.paint) {
             items.push({ property: "strokes.color", rawValue: solidPaintToRgba(strokeSupport.paint), resolvedType: "COLOR" });
-            if (typeof anyNode.strokeWeight === "number") {
-                items.push({ property: "strokeWeight", rawValue: anyNode.strokeWeight, resolvedType: "FLOAT" });
-            }
         }
         else if (strokeSupport.reason) {
             skippedItems.push({ property: "strokes.color", reason: strokeSupport.reason });
         }
+        if (typeof anyNode.strokeWeight === "number" && (hasVisiblePaint(strokes) || hasExistingStrokeColorBinding(node))) {
+            items.push({ property: "strokeWeight", rawValue: anyNode.strokeWeight, resolvedType: "FLOAT" });
+        }
+    }
+    const shouldDebugStrokeWeight = typeof anyNode.strokeWeight === "number" &&
+        ("strokes" in anyNode && Array.isArray(anyNode.strokes));
+    if (shouldDebugStrokeWeight && !items.some((item) => item.property === "strokeWeight")) {
+        const strokes = anyNode.strokes;
+        const strokeSupport = getPaintSupportDetails(strokes, "stroke");
+        const hasVisible = hasVisiblePaint(strokes);
+        const hasBoundStrokeColor = hasExistingStrokeColorBinding(node);
+        skippedItems.push({
+            property: "strokeWeight",
+            reason: `Debug: strokeWeight=${String(anyNode.strokeWeight)} support=${strokeSupport.kind}${strokeSupport.reason ? ` (${strokeSupport.reason})` : ""} visibleStroke=${String(hasVisible)} boundStrokeColor=${String(hasBoundStrokeColor)}`
+        });
     }
     const numericFields = [
         "width",
@@ -501,6 +571,9 @@ function extractBindableFields(node) {
     ];
     for (const field of numericFields) {
         if (typeof anyNode[field] === "number") {
+            if ((isPaddingProperty(field) || field === "itemSpacing") && !hasAutoLayout(node)) {
+                continue;
+            }
             if (field === "width" && shouldSkipDimensionVariable(node, "horizontal")) {
                 skippedItems.push({ property: "width", reason: "Width is skipped for HUG or FILL sizing." });
                 continue;
@@ -523,10 +596,15 @@ function extractBindableFields(node) {
             skippedItems.push(...textExtraction.skippedItems);
         }
     }
+    if ("effects" in anyNode && Array.isArray(anyNode.effects)) {
+        const effectExtraction = extractEffectBindableFields(node, anyNode.effects);
+        items.push(...effectExtraction.items);
+        skippedItems.push(...effectExtraction.skippedItems);
+    }
     return { items, skippedItems };
 }
 function percentTypographyValueToPixels(fontSize, percentValue) {
-    return (fontSize * percentValue) / 100;
+    return normalizeFloatValue((fontSize * percentValue) / 100);
 }
 function extractTextBindableFields(node) {
     const items = [];
@@ -656,6 +734,144 @@ function extractTextBindableFields(node) {
     }
     return { items, skippedItems };
 }
+function extractEffectBindableFields(node, effects) {
+    const items = [];
+    const skippedItems = [];
+    effects.forEach((effect, index) => {
+        if (effect.visible === false) {
+            return;
+        }
+        const effectIndex = index;
+        const effectNodeName = buildEffectPathNodeName(node.name, effect.type, index);
+        const displayNodeName = buildEffectDisplayNodeName(node.name, effect.type, index);
+        if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
+            items.push({
+                property: "effects.color",
+                rawValue: effect.color,
+                resolvedType: "COLOR",
+                displayNodeName,
+                pathNodeName: effectNodeName,
+                effectIndex,
+                effectField: "color"
+            });
+            if (!shouldSkipDefaultEffectNumericValue("effects.radius", effect.radius)) {
+                items.push({
+                    property: "effects.radius",
+                    rawValue: effect.radius,
+                    resolvedType: "FLOAT",
+                    displayNodeName,
+                    pathNodeName: effectNodeName,
+                    effectIndex,
+                    effectField: "radius"
+                });
+            }
+            else {
+                skippedItems.push({ property: "effects.radius", reason: "Default effect radius does not create a token." });
+            }
+            if (typeof effect.spread === "number") {
+                if (!shouldSkipDefaultEffectNumericValue("effects.spread", effect.spread)) {
+                    items.push({
+                        property: "effects.spread",
+                        rawValue: effect.spread,
+                        resolvedType: "FLOAT",
+                        displayNodeName,
+                        pathNodeName: effectNodeName,
+                        effectIndex,
+                        effectField: "spread"
+                    });
+                }
+                else {
+                    skippedItems.push({ property: "effects.spread", reason: "Default effect spread does not create a token." });
+                }
+            }
+            if (!shouldSkipDefaultEffectNumericValue("effects.offsetX", effect.offset.x)) {
+                items.push({
+                    property: "effects.offsetX",
+                    rawValue: effect.offset.x,
+                    resolvedType: "FLOAT",
+                    displayNodeName,
+                    pathNodeName: effectNodeName,
+                    effectIndex,
+                    effectField: "offsetX"
+                });
+            }
+            else {
+                skippedItems.push({ property: "effects.offsetX", reason: "Default effect offsetX does not create a token." });
+            }
+            if (!shouldSkipDefaultEffectNumericValue("effects.offsetY", effect.offset.y)) {
+                items.push({
+                    property: "effects.offsetY",
+                    rawValue: effect.offset.y,
+                    resolvedType: "FLOAT",
+                    displayNodeName,
+                    pathNodeName: effectNodeName,
+                    effectIndex,
+                    effectField: "offsetY"
+                });
+            }
+            else {
+                skippedItems.push({ property: "effects.offsetY", reason: "Default effect offsetY does not create a token." });
+            }
+            return;
+        }
+        if (effect.type === "LAYER_BLUR" || effect.type === "BACKGROUND_BLUR") {
+            if (!shouldSkipDefaultEffectNumericValue("effects.radius", effect.radius)) {
+                items.push({
+                    property: "effects.radius",
+                    rawValue: effect.radius,
+                    resolvedType: "FLOAT",
+                    displayNodeName,
+                    pathNodeName: effectNodeName,
+                    effectIndex,
+                    effectField: "radius"
+                });
+            }
+            else {
+                skippedItems.push({ property: "effects.radius", reason: "Default effect radius does not create a token." });
+            }
+            return;
+        }
+        skippedItems.push({
+            property: "effects.radius",
+            reason: `${effect.type} effects are not supported yet.`
+        });
+    });
+    return { items, skippedItems };
+}
+function buildEffectPathNodeName(nodeName, effectType, index) {
+    return `${nodeName}/${normalizeEffectType(effectType)}-${index + 1}`;
+}
+function buildEffectDisplayNodeName(nodeName, effectType, index) {
+    return `${nodeName} [${humanizeEffectType(effectType)} ${index + 1}]`;
+}
+function normalizeEffectType(effectType) {
+    switch (effectType) {
+        case "DROP_SHADOW":
+            return "drop-shadow";
+        case "INNER_SHADOW":
+            return "inner-shadow";
+        case "LAYER_BLUR":
+            return "layer-blur";
+        case "BACKGROUND_BLUR":
+            return "background-blur";
+        default:
+            return normalizeSegment(effectType);
+    }
+}
+function humanizeEffectType(effectType) {
+    switch (effectType) {
+        case "DROP_SHADOW":
+            return "Drop shadow";
+        case "INNER_SHADOW":
+            return "Inner shadow";
+        case "LAYER_BLUR":
+            return "Layer blur";
+        case "BACKGROUND_BLUR":
+            return "Background blur";
+        default:
+            return effectType;
+    }
+}
 function getTextStyledSegments(node) {
     var _a;
     const textNode = node;
@@ -779,6 +995,15 @@ function shouldSkipDefaultTextNumericValue(property, value) {
         property === "paragraphSpacing" ||
         property === "paragraphIndent");
 }
+function shouldSkipDefaultEffectNumericValue(property, value) {
+    if (!isZeroValue(value)) {
+        return false;
+    }
+    return (property === "effects.radius" ||
+        property === "effects.spread" ||
+        property === "effects.offsetX" ||
+        property === "effects.offsetY");
+}
 function toTextRange(candidate) {
     if (candidate.rangeStart === undefined || candidate.rangeEnd === undefined) {
         return undefined;
@@ -840,15 +1065,22 @@ function getPaintSupportDetails(paints, paintKind) {
         reason: `Only single solid ${paintKind}s are supported.`
     };
 }
-async function getExistingBindingName(node, property, rangeStart, rangeEnd) {
-    const binding = extractExistingBinding(node, property, rangeStart, rangeEnd);
+function hasVisiblePaint(paints) {
+    return paints.some((paint) => paint.visible !== false);
+}
+function hasExistingStrokeColorBinding(node) {
+    return extractExistingBinding(node, "strokes.color") !== null;
+}
+async function getExistingBindingName(node, property, rangeStart, rangeEnd, effectIndex, effectField) {
+    const binding = extractExistingBinding(node, property, rangeStart, rangeEnd, effectIndex, effectField);
     if (!binding) {
         return null;
     }
     const variable = await figma.variables.getVariableByIdAsync(binding.id);
     return variable ? variable.name : binding.id;
 }
-function extractExistingBinding(node, property, rangeStart, rangeEnd) {
+function extractExistingBinding(node, property, rangeStart, rangeEnd, effectIndex, effectField) {
+    var _a;
     if (node.type === "TEXT" &&
         rangeStart !== undefined &&
         rangeEnd !== undefined &&
@@ -900,6 +1132,20 @@ function extractExistingBinding(node, property, rangeStart, rangeEnd) {
             }
         }
     }
+    if ((property === "effects.color" ||
+        property === "effects.radius" ||
+        property === "effects.spread" ||
+        property === "effects.offsetX" ||
+        property === "effects.offsetY") &&
+        effectIndex !== undefined &&
+        effectField) {
+        const effects = ("effects" in node && Array.isArray(node.effects)) ? node.effects : null;
+        const effect = effects === null || effects === void 0 ? void 0 : effects[effectIndex];
+        const binding = (_a = effect === null || effect === void 0 ? void 0 : effect.boundVariables) === null || _a === void 0 ? void 0 : _a[effectField];
+        if (binding) {
+            return binding;
+        }
+    }
     const directKey = property;
     const directBinding = bound[directKey];
     if (directBinding && !Array.isArray(directBinding) && "id" in directBinding) {
@@ -926,7 +1172,10 @@ function buildCandidatePaths(collectionKind, pathContext, node, property) {
     const candidates = [];
     const seen = new Set();
     const pushPath = (componentName, variantSegments) => {
-        const path = buildComponentPath(collectionKind, { componentName, variantSegments }, node, property);
+        const localPathContext = { componentName, variantSegments };
+        const path = shouldUseSemanticTerminal(collectionKind, componentName)
+            ? buildTerminalSemanticPath(collectionKind, localPathContext, node, property)
+            : buildComponentPath(collectionKind, localPathContext, node, property);
         if (!seen.has(path)) {
             seen.add(path);
             candidates.push(path);
@@ -972,19 +1221,25 @@ function buildComponentPath(collectionKind, pathContext, node, property) {
 }
 function buildProposedChain(pathContext, node, property, rawValue) {
     const collectionKind = getCollectionKind(property);
+    const semanticPath = buildSemanticPath(collectionKind, pathContext, node, property, rawValue);
     return {
         collectionKind,
         basePath: buildBasePath(collectionKind, property, rawValue),
-        semanticPath: buildSemanticPath(collectionKind, pathContext, node, property, rawValue),
-        componentPath: buildComponentPath(collectionKind, pathContext, node, property)
+        semanticPath,
+        componentPath: shouldUseSemanticTerminal(collectionKind, pathContext.componentName)
+            ? semanticPath
+            : buildComponentPath(collectionKind, pathContext, node, property)
     };
 }
 function buildSemanticPath(collectionKind, pathContext, node, property, rawValue) {
-    if (collectionKind === "colors") {
+    if (shouldUseSemanticTerminal(collectionKind, pathContext.componentName)) {
+        return buildTerminalSemanticPath(collectionKind, pathContext, node, property);
+    }
+    if (collectionKind === "color") {
         return [
-            "colors",
+            "color",
             "semantic",
-            getSemanticColorRole(node, property),
+            getSemanticColorRole(node, property, pathContext.componentName),
             getSemanticDomain(pathContext.componentName),
             ...getSemanticSubtypeSegments(pathContext.componentName),
             ...pathContext.variantSegments.map((segment) => segment.value)
@@ -1002,11 +1257,14 @@ function buildSemanticPath(collectionKind, pathContext, node, property, rawValue
         .join("/");
 }
 function buildScopedSemanticPath(collectionKind, pathContext, node, property, rawValue) {
-    if (collectionKind === "colors") {
+    if (shouldUseSemanticTerminal(collectionKind, pathContext.componentName)) {
+        return buildTerminalSemanticPath(collectionKind, pathContext, node, property);
+    }
+    if (collectionKind === "color") {
         return [
-            "colors",
+            "color",
             "semantic",
-            getSemanticColorRole(node, property),
+            getSemanticColorRole(node, property, pathContext.componentName),
             getSemanticDomain(pathContext.componentName),
             ...getSemanticSubtypeSegments(pathContext.componentName),
             ...pathContext.variantSegments.map((segment) => segment.value)
@@ -1019,14 +1277,43 @@ function buildScopedSemanticPath(collectionKind, pathContext, node, property, ra
             .map((segment) => normalizeSegment(segment))
             .join("/");
     }
-    return ["device", "semantic", pathContext.componentName, getDeviceBucket(property), formatNumberish(rawValue)]
+    return [
+        "device",
+        "semantic",
+        getDeviceBucket(property),
+        ...pathContext.componentName.split("/").map((segment) => normalizeSegment(segment)).filter(Boolean),
+        formatNumberish(rawValue)
+    ]
         .map((segment) => normalizeSegment(segment))
         .join("/");
 }
+function buildTerminalSemanticPath(collectionKind, pathContext, node, property) {
+    if (collectionKind === "color" && isIconFamily(pathContext.componentName)) {
+        return [
+            "color",
+            "semantic",
+            "icon",
+            ...getSemanticSubtypeSegments(pathContext.componentName),
+            getSemanticColorRole(node, property, pathContext.componentName),
+            ...pathContext.variantSegments.map((segment) => segment.value)
+        ]
+            .map((segment) => normalizeSegment(segment))
+            .join("/");
+    }
+    if (collectionKind === "typography") {
+        return ["typography", "semantic", normalizeSegment(node.name) || "text", getTypographyLeaf(property)]
+            .map((segment) => normalizeSegment(segment))
+            .join("/");
+    }
+    return buildComponentPath(collectionKind, pathContext, node, property);
+}
+function shouldUseSemanticTerminal(collectionKind, componentName) {
+    return collectionKind === "typography" || (collectionKind === "color" && isIconFamily(componentName));
+}
 function buildBasePath(collectionKind, property, rawValue) {
-    if (collectionKind === "colors") {
+    if (collectionKind === "color") {
         const color = rawValue;
-        return ["colors", "base", getBaseColorName(color), String(colorAlphaPercent(color))]
+        return ["color", "base", getBaseColorName(color), String(colorAlphaPercent(color))]
             .map((segment) => normalizeSegment(segment))
             .join("/");
     }
@@ -1040,8 +1327,8 @@ function buildBasePath(collectionKind, property, rawValue) {
         .join("/");
 }
 function getCollectionKind(property) {
-    if (property === "fills.color" || property === "strokes.color") {
-        return "colors";
+    if (property === "fills.color" || property === "strokes.color" || property === "effects.color") {
+        return "color";
     }
     if (property === "fontSize" ||
         property === "fontFamily" ||
@@ -1055,7 +1342,7 @@ function getCollectionKind(property) {
     return "device";
 }
 function getPropertyFamily(property) {
-    if (property === "fills.color") {
+    if (property === "fills.color" || property === "effects.color") {
         return "colors";
     }
     if (property === "fontSize" ||
@@ -1090,7 +1377,7 @@ function getPropertyFamily(property) {
 }
 function getScanModeForProperty(property, settings) {
     const collectionKind = getCollectionKind(property);
-    if (collectionKind === "colors") {
+    if (collectionKind === "color") {
         return settings.colorsScanMode;
     }
     if (collectionKind === "typography") {
@@ -1113,6 +1400,9 @@ function shouldIncludeSkippedForSettings(node, component, property, settings) {
     return shouldIncludeNodeForMode(node, component, scanMode, settings);
 }
 function shouldIncludeNodeForMode(node, component, scanMode, settings) {
+    if (shouldStopTraversalOnNode(node)) {
+        return false;
+    }
     if (node.id === component.node.id) {
         return true;
     }
@@ -1127,7 +1417,7 @@ function shouldIncludeNodeForMode(node, component, scanMode, settings) {
 function getComponentLeaf(node, component, property) {
     var _a;
     const collectionKind = getCollectionKind(property);
-    if (collectionKind === "colors") {
+    if (collectionKind === "color") {
         return getTokenLeaf(node, component, property);
     }
     if (collectionKind === "typography") {
@@ -1144,9 +1434,9 @@ function getComponentLeaf(node, component, property) {
     const bucket = getDeviceBucket(property);
     return nodeName && component.node && node.id !== component.node.id ? `${nodeName}/${bucket}` : bucket;
 }
-function getSemanticColorRole(node, property) {
+function getSemanticColorRole(node, property, componentName) {
     if (property === "strokes.color") {
-        return "border";
+        return "stroke";
     }
     const nodeName = normalizeSegment(node.name);
     if (nodeName && !looksLikeVariantNodeName(node.name)) {
@@ -1165,6 +1455,11 @@ function getSemanticDomain(componentName) {
 function getSemanticSubtypeSegments(componentName) {
     const segments = componentName.split("/").map((segment) => normalizeSegment(segment)).filter(Boolean);
     return segments.slice(1);
+}
+function isIconFamily(componentName) {
+    var _a;
+    const family = normalizeSegment((_a = componentName.split("/")[0]) !== null && _a !== void 0 ? _a : componentName);
+    return family === "icon";
 }
 function getTypographyLeaf(property) {
     if (property === "fontSize") {
@@ -1204,6 +1499,11 @@ function getDeviceBucket(property) {
             return "radius";
         case "strokeWeight":
             return "stroke";
+        case "effects.radius":
+        case "effects.spread":
+        case "effects.offsetX":
+        case "effects.offsetY":
+            return "effect";
         case "width":
             return "width";
         case "height":
@@ -1216,7 +1516,7 @@ function getDeviceBucket(property) {
 }
 function formatNumberish(rawValue) {
     if (typeof rawValue === "number") {
-        return String(rawValue);
+        return String(normalizeFloatValue(rawValue));
     }
     if (typeof rawValue === "string") {
         return rawValue;
@@ -1246,7 +1546,7 @@ function seedBaseColorNames(variableIndex, collectionById) {
     baseColorNames.clear();
     for (const entry of [...variableIndex.values()].flat()) {
         const parts = entry.normalizedPath.split("/");
-        if (parts[0] !== "colors" || parts[1] !== "base" || !((_a = parts[2]) === null || _a === void 0 ? void 0 : _a.startsWith("color"))) {
+        if (parts[0] !== "color" || parts[1] !== "base" || !((_a = parts[2]) === null || _a === void 0 ? void 0 : _a.startsWith("color"))) {
             continue;
         }
         const collection = collectionById.get(entry.collectionId);
@@ -1273,6 +1573,7 @@ async function executeBindings(message) {
     let created = 0;
     let skipped = 0;
     const errors = [];
+    const debug = [];
     const shouldBind = message.executionMode !== "create-only";
     const shouldCreate = message.executionMode !== "bind-only";
     for (const readyId of message.readyIds) {
@@ -1291,7 +1592,7 @@ async function executeBindings(message) {
                 throw new Error(`Missing node ${candidate.nodeName}`);
             }
             if (shouldBind) {
-                await bindVariableToNode(node, candidate.property, variable, toTextRange(candidate));
+                await bindVariableToNode(node, candidate.property, variable, toTextRange(candidate), candidate.effectIndex, candidate.effectField);
                 bound += 1;
             }
             else {
@@ -1309,15 +1610,24 @@ async function executeBindings(message) {
             continue;
         }
         try {
+            if (candidate.property === "strokeWeight") {
+                debug.push(`[strokeWeight execute] start node="${candidate.nodeName}" base="${unmatched.basePath}" semantic="${unmatched.semanticPath}" component="${unmatched.componentPath}" shouldCreate=${String(shouldCreate)} shouldBind=${String(shouldBind)}`);
+            }
             const node = await figma.getNodeByIdAsync(candidate.nodeId);
             if (!node) {
                 throw new Error(`Missing node ${candidate.nodeName}`);
             }
             if (shouldSkipNewVariableCreation(candidate, node)) {
+                if (candidate.property === "strokeWeight") {
+                    debug.push(`[strokeWeight execute] skipped-by-create-rule node="${candidate.nodeName}"`);
+                }
                 skipped += 1;
                 continue;
             }
             if (!shouldCreate) {
+                if (candidate.property === "strokeWeight") {
+                    debug.push(`[strokeWeight execute] skipped-because-create-disabled node="${candidate.nodeName}"`);
+                }
                 skipped += 1;
                 continue;
             }
@@ -1328,13 +1638,22 @@ async function executeBindings(message) {
                 componentPath: unmatched.componentPath,
                 variantProperties: unmatched.variantProperties
             }, collections, variableIndex);
+            if (candidate.property === "strokeWeight") {
+                debug.push(`[strokeWeight execute] ensured variable="${result.variable.name}" createdCount=${String(result.createdCount)}`);
+            }
             created += result.createdCount;
             if (shouldBind) {
-                await bindVariableToNode(node, candidate.property, result.variable, toTextRange(candidate));
+                await bindVariableToNode(node, candidate.property, result.variable, toTextRange(candidate), candidate.effectIndex, candidate.effectField);
+                if (candidate.property === "strokeWeight") {
+                    debug.push(`[strokeWeight execute] bound variable="${result.variable.name}"`);
+                }
                 bound += 1;
             }
         }
         catch (error) {
+            if ((candidate === null || candidate === void 0 ? void 0 : candidate.property) === "strokeWeight") {
+                debug.push(`[strokeWeight execute] error ${formatError(error)}`);
+            }
             errors.push(`${candidate.nodeName} · ${candidate.property}: ${formatError(error)}`);
         }
     }
@@ -1362,7 +1681,7 @@ async function executeBindings(message) {
                 if (!existing) {
                     throw new Error("Existing conflict variable is missing.");
                 }
-                await bindVariableToNode(node, candidate.property, existing.variable, toTextRange(candidate));
+                await bindVariableToNode(node, candidate.property, existing.variable, toTextRange(candidate), candidate.effectIndex, candidate.effectField);
                 bound += 1;
                 continue;
             }
@@ -1386,7 +1705,7 @@ async function executeBindings(message) {
             }, collections, variableIndex);
             created += result.createdCount;
             if (shouldBind) {
-                await bindVariableToNode(node, candidate.property, result.variable, toTextRange(candidate));
+                await bindVariableToNode(node, candidate.property, result.variable, toTextRange(candidate), candidate.effectIndex, candidate.effectField);
                 bound += 1;
             }
         }
@@ -1400,7 +1719,8 @@ async function executeBindings(message) {
         bound,
         created,
         skipped,
-        errors
+        errors,
+        debug
     };
 }
 async function buildDryRunSummary(message, collections, variableIndex) {
@@ -1474,13 +1794,13 @@ function estimateCreatedPathsForCandidate(candidate, basePath, semanticPath, com
     let created = 0;
     if (createBaseVariables) {
         created += addSimulatedPath(basePath, simulatedPaths, variableIndex);
-        if (candidate.collectionKind === "colors") {
+        if (candidate.collectionKind === "color") {
             const ladder = collectBaseColorAlphaLadder(variableIndex);
             ladder.add(colorAlphaPercent(candidate.rawValue));
             const colorEntries = collectBaseColorEntries(variableIndex);
             for (const colorName of colorEntries.keys()) {
                 for (const alpha of ladder) {
-                    const ladderPath = normalizeTokenPath(`colors/base/${colorName}/${alpha}`);
+                    const ladderPath = normalizeTokenPath(`color/base/${colorName}/${alpha}`);
                     created += addSimulatedPath(ladderPath, simulatedPaths, variableIndex);
                 }
             }
@@ -1551,6 +1871,12 @@ async function ensureVariableForCandidate(candidate, options, collections, varia
         semanticVariable = semanticResult.variable;
         createdCount += semanticResult.created ? 1 : 0;
     }
+    if (componentPath === resolvedSemanticPath) {
+        candidate.proposedBasePath = basePath;
+        candidate.proposedSemanticPath = resolvedSemanticPath;
+        candidate.proposedComponentPath = componentPath;
+        return { variable: semanticVariable, createdCount };
+    }
     const componentResult = await ensureChainVariable(componentPath, candidate, collections, variableIndex, {
         kind: "component",
         rawValue: candidate.rawValue,
@@ -1567,6 +1893,13 @@ async function preflightConflicts(candidates, collections, variableIndex) {
     for (const candidate of candidates) {
         const result = await preflightCandidateConflict(candidate, collections, variableIndex);
         if (result) {
+            const shouldUseFallbackByDefault = result.pathKind === "semantic" &&
+                Boolean(result.fallbackPath) &&
+                normalizeTokenPath(result.fallbackPath) !== normalizeTokenPath(result.proposedPath);
+            const action = shouldUseFallbackByDefault ? "create-deeper-semantic" : "skip";
+            const resolvedPreviewPath = shouldUseFallbackByDefault && result.fallbackPath
+                ? result.fallbackPath
+                : result.proposedPath;
             conflicts.push({
                 id: candidate.id,
                 label: `${candidate.nodeName} · ${candidate.property}`,
@@ -1576,8 +1909,8 @@ async function preflightConflicts(candidates, collections, variableIndex) {
                 chainLevelLabel: getConflictChainLevelLabel(result.pathKind),
                 proposedPath: result.proposedPath,
                 fallbackPath: result.fallbackPath,
-                resolvedPreviewPath: result.proposedPath,
-                action: "skip"
+                resolvedPreviewPath,
+                action
             });
         }
     }
@@ -1612,6 +1945,9 @@ async function preflightCandidateConflict(candidate, collections, variableIndex)
         return Object.assign(Object.assign({}, semanticResult), { fallbackPath: normalizeTokenPath(fallbackPath) !== normalizeTokenPath(candidate.proposedSemanticPath)
                 ? normalizeTokenPath(fallbackPath)
                 : undefined });
+    }
+    if (normalizeTokenPath(candidate.proposedComponentPath) === normalizeTokenPath(candidate.proposedSemanticPath)) {
+        return null;
     }
     const componentResult = await inspectExistingPathConflict(candidate.proposedComponentPath, candidate, collections, variableIndex, {
         kind: "component",
@@ -1784,7 +2120,7 @@ function getComparableVariableValue(rawValue, resolvedType) {
         return rgbaToHex(rawValue);
     }
     if (typeof rawValue === "number") {
-        return String(rawValue);
+        return String(normalizeFloatValue(rawValue));
     }
     if (typeof rawValue === "string") {
         return rawValue;
@@ -1796,7 +2132,7 @@ function getComparableVariableValue(rawValue, resolvedType) {
 }
 async function ensureGlobalColorBaseLadder(candidate, collections, variableIndex) {
     var _a;
-    if (candidate.collectionKind !== "colors") {
+    if (candidate.collectionKind !== "color") {
         return 0;
     }
     const ladder = collectBaseColorAlphaLadder(variableIndex);
@@ -1806,7 +2142,7 @@ async function ensureGlobalColorBaseLadder(candidate, collections, variableIndex
     for (const [colorName, rgbHex] of colorEntries.entries()) {
         const rgb = hexToRgb(rgbHex);
         for (const alpha of ladder) {
-            const ladderPath = ["colors", "base", colorName, String(alpha)]
+            const ladderPath = ["color", "base", colorName, String(alpha)]
                 .map((segment) => normalizeSegment(segment))
                 .join("/");
             if ((_a = variableIndex.get(ladderPath)) === null || _a === void 0 ? void 0 : _a.length) {
@@ -1831,7 +2167,7 @@ function collectBaseColorAlphaLadder(variableIndex) {
     const ladder = new Set([100, 80, 60, 40, 20, 10, 0]);
     for (const entry of [...variableIndex.values()].flat()) {
         const parts = entry.normalizedPath.split("/");
-        if (parts[0] !== "colors" || parts[1] !== "base" || !parts[3]) {
+        if (parts[0] !== "color" || parts[1] !== "base" || !parts[3]) {
             continue;
         }
         const alpha = Number(parts[3]);
@@ -1845,7 +2181,7 @@ function collectBaseColorEntries(variableIndex) {
     const entries = new Map();
     for (const entry of [...variableIndex.values()].flat()) {
         const parts = entry.normalizedPath.split("/");
-        if (parts[0] !== "colors" || parts[1] !== "base" || !parts[2]) {
+        if (parts[0] !== "color" || parts[1] !== "base" || !parts[2]) {
             continue;
         }
         const firstModeValue = Object.values(entry.variable.valuesByMode)[0];
@@ -1947,7 +2283,7 @@ function getComparableRawValue(rawValue, resolvedType) {
         return rgbaToHex(rawValue);
     }
     if (typeof rawValue === "number") {
-        return String(rawValue);
+        return String(normalizeFloatValue(rawValue));
     }
     if (typeof rawValue === "string") {
         return rawValue;
@@ -1984,7 +2320,7 @@ function hasMatchingSharedValue(component, node, property, rawValue, resolvedTyp
     return isComponentWithinSharedPrefix(component.componentName, sharedComponentName) &&
         getComparableRawValue(rawValue, resolvedType).length > 0;
 }
-async function bindVariableToNode(node, property, variable, range) {
+async function bindVariableToNode(node, property, variable, range, effectIndex, effectField) {
     var _a, _b;
     if (property === "fills.color") {
         if (!("fills" in node) || !Array.isArray(node.fills)) {
@@ -2010,6 +2346,25 @@ async function bindVariableToNode(node, property, variable, range) {
         }
         paints[index] = figma.variables.setBoundVariableForPaint(paints[index], "color", variable);
         node.strokes = paints;
+        return;
+    }
+    if ((property === "effects.color" ||
+        property === "effects.radius" ||
+        property === "effects.spread" ||
+        property === "effects.offsetX" ||
+        property === "effects.offsetY") &&
+        effectIndex !== undefined &&
+        effectField) {
+        if (!("effects" in node) || !Array.isArray(node.effects)) {
+            throw new Error("Node does not support effect binding.");
+        }
+        const effects = [...node.effects];
+        const effect = effects[effectIndex];
+        if (!effect) {
+            throw new Error(`Missing effect at index ${effectIndex}.`);
+        }
+        effects[effectIndex] = figma.variables.setBoundVariableForEffect(effect, effectField, variable);
+        node.effects = effects;
         return;
     }
     if (node.type === "TEXT" &&
@@ -2090,7 +2445,7 @@ function toVariableValue(rawValue, resolvedType) {
     }
     if (resolvedType === "FLOAT") {
         if (typeof rawValue === "number") {
-            return rawValue;
+            return normalizeFloatValue(rawValue);
         }
         throw new Error("Expected numeric value.");
     }
@@ -2105,13 +2460,16 @@ function toVariableValue(rawValue, resolvedType) {
     }
     throw new Error(`Unsupported variable type: ${resolvedType}`);
 }
+function normalizeFloatValue(value) {
+    return Math.round((value + Number.EPSILON) * 10000) / 10000;
+}
 function numberOrZero(value) {
     return typeof value === "number" ? value : 0;
 }
 function getTokenLeaf(node, component, property) {
     var _a;
     const primaryAlias = normalizeSegment((_a = PROPERTY_ALIASES[property][0]) !== null && _a !== void 0 ? _a : property);
-    const layerSegment = normalizeSegment(node.name);
+    const layerSegment = normalizeGeneratedLayerSegment(node.name, property);
     const groupedAlias = getGroupedAlias(node, property);
     if (groupedAlias) {
         return groupedAlias;
@@ -2120,9 +2478,22 @@ function getTokenLeaf(node, component, property) {
         return primaryAlias;
     }
     if (shouldUseLayerAndPropertyLeaf(property, layerSegment)) {
+        if (layerSegment === primaryAlias) {
+            return primaryAlias;
+        }
         return `${layerSegment}/${primaryAlias}`;
     }
     return layerSegment || primaryAlias;
+}
+function normalizeGeneratedLayerSegment(nodeName, property) {
+    const normalized = normalizeSegment(nodeName);
+    if (!normalized) {
+        return normalized;
+    }
+    if ((property === "strokes.color" || property === "strokeWeight") && normalized === "border") {
+        return "stroke";
+    }
+    return normalized;
 }
 function getGroupedAlias(node, property) {
     if (isPaddingProperty(property) &&
@@ -2175,6 +2546,11 @@ function shouldUseLayerAndPropertyLeaf(property, layerSegment) {
     }
     return (property === "strokes.color" ||
         property === "strokeWeight" ||
+        property === "effects.color" ||
+        property === "effects.radius" ||
+        property === "effects.spread" ||
+        property === "effects.offsetX" ||
+        property === "effects.offsetY" ||
         property === "opacity" ||
         property === "width" ||
         property === "height" ||
@@ -2227,6 +2603,31 @@ function hasSemanticLayerName(node, settings) {
         return matchesSemanticAllowlist(normalized, settings.semanticAllowlist);
     }
     return true;
+}
+function shouldStopTraversalOnNode(node) {
+    if (node.type === "INSTANCE") {
+        return true;
+    }
+    if (node.type === "BOOLEAN_OPERATION") {
+        return true;
+    }
+    if ("isMask" in node && node.isMask === true) {
+        return true;
+    }
+    const normalized = normalizeSegment(node.name);
+    if (!normalized) {
+        return false;
+    }
+    if (normalized === "mask") {
+        return true;
+    }
+    if (normalized === "subtract" || normalized.startsWith("subtract-")) {
+        return true;
+    }
+    return false;
+}
+function hasAutoLayout(node) {
+    return "layoutMode" in node && typeof node.layoutMode === "string" && node.layoutMode !== "NONE";
 }
 function matchesSemanticAllowlist(normalizedName, allowlist) {
     return allowlist.some((entry) => {

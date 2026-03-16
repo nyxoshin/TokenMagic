@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": ".test-dist",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": ["src/testable.ts"]
+}

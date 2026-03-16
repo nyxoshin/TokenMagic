@@ -41,7 +41,7 @@ body {
 
 .shell {
   width: 100%;
-  max-width: 880px;
+  max-width: 100%;
   height: 100vh;
   max-height: 100vh;
   display: grid;
@@ -54,6 +54,7 @@ body {
   gap: 12px;
   border-bottom: 1px solid var(--border);
   background: #000;
+  padding: 6px 14px 0px 14px;
 }
 
 .topbar-title {
@@ -72,7 +73,6 @@ p {
 h1 {
   font-size: 14px;
   font-weight: 600;
-  letter-spacing: -0.02em;
 }
 
 .wordmark {
@@ -85,7 +85,7 @@ h1 {
   letter-spacing: 0.1em;
   transform-origin: left center;
   white-space: nowrap;
-  text-align: center;
+  text-align: left;
 }
 
 .subtle {
@@ -94,33 +94,49 @@ h1 {
 }
 
 .content {
-  padding: 14px;
   display: grid;
-  gap: 10px;
-  align-content: start;
-  overflow: auto;
+  grid-template-rows: auto auto 1fr;
+  gap: 0px;
+  overflow: hidden;
   min-height: 0;
   background: #000;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: stretch;
+  min-height: 0;
+  padding: 0 !important;
+}
+
+.workspace-column {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
 }
 
-.content::-webkit-scrollbar {
+.workspace-column::-webkit-scrollbar {
   width: 10px;
 }
 
-.content::-webkit-scrollbar-track {
+.workspace-column::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.content::-webkit-scrollbar-thumb {
+.workspace-column::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.14);
   border: 2px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
 }
 
-.content::-webkit-scrollbar-thumb:hover {
+.workspace-column::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.22);
   border: 2px solid transparent;
   background-clip: padding-box;
@@ -203,6 +219,21 @@ h2 {
   word-break: break-word;
 }
 
+.debug-output {
+  margin: 0;
+  min-height: 120px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted-strong);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .path {
   font: 12px/1.45 "SF Mono", "Roboto Mono", "Geist Mono", "Menlo", monospace;
   color: var(--muted);
@@ -264,6 +295,11 @@ textarea {
   gap: 10px;
 }
 
+.preview-group {
+  display: grid;
+  gap: 8px;
+}
+
 .setting-label {
   display: grid;
   gap: 6px;
@@ -278,6 +314,8 @@ textarea {
 .actions {
   display: grid;
   grid-template-columns: 1fr;
+  gap: 8px;
+  width: 100%;
 }
 
 button {
@@ -289,11 +327,17 @@ button {
   font-weight: 600;
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease;
+  width: 100%;
 }
 
 .primary {
   background: #fafafa;
   color: #0a0a0b;
+}
+
+.secondary {
+  background: #050505;
+  color: var(--text);
 }
 
 .statline {
@@ -337,6 +381,17 @@ code {
   position: sticky;
   bottom: 0;
   z-index: 10;
+  width: 100%;
+}
+
+@media (max-width: 560px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 input:focus-visible,

@@ -4,10 +4,13 @@
   "private": true,
   "scripts": {
     "build": "tsc && node scripts/build-ui.mjs",
-    "watch": "tsc --watch --preserveWatchOutput"
+    "watch": "tsc --watch --preserveWatchOutput",
+    "test:build": "tsc -p tsconfig.test.json",
+    "test": "npm run test:build && node --test tests/*.test.js"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.117.0",
+    "@types/node": "^24.5.2",
     "typescript": "^5.9.2"
   }
 }

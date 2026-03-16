@@ -1,42 +1,52 @@
 # TokenMagic Roadmap
 
-This roadmap reflects the current shipped state of TokenMagic as of March 13, 2026.
+This roadmap reflects the current shipped state of TokenMagic as of March 15, 2026.
 
-The plugin is past the prototype stage. It now has a real token-generation workflow, configurable scanning, conflict handling, execution modes, and component presets. The remaining work is mostly about reliability, broader property support, and polish across more design-system files.
+TokenMagic is already past the prototype stage. It now has a working scan -> preview -> create/bind workflow, configurable scanning, live preview, conflict handling, effect support, and a growing automated regression suite.
+
+The next phase is reliability: test harder, fix edge cases faster, and keep naming and path behavior predictable across messy real files.
 
 ## Shipped
 
-### Token architecture
+### Core workflow
 
-- `colors`, `typography`, and `device` collections
-- `base -> semantic -> component` alias chain generation
-- shared `device/base/size/*` numeric pool
-- base color numbering with shared opacity ladder propagation
-- exact-path matching for existing variables
+- scans selected components, component sets, and internal layers inside components
+- proposes token paths automatically
+- previews changes live in the UI
+- creates missing variables
+- binds existing or newly created variables back to Figma nodes
 
-### Selection and scanning
+### Token domains
 
-- supports:
-  - selected `COMPONENT`
-  - selected `COMPONENT_SET`
-  - selected internal layers inside components
-- variant parsing from Figma metadata with name-based fallbacks
-- per-category scan scopes:
+- `color`
+- `typography`
+- `device`
+
+Current path behavior:
+
+- default chain:
+  - `base -> semantic -> component`
+- icon colors:
+  - `color/base -> color/semantic/icon/...`
+- typography:
+  - `typography/base -> typography/semantic/...`
+- device semantics:
+  - bucket-first paths like `device/semantic/stroke/avatar/club/sm/1`
+
+### Scanning controls
+
+- per-category scan scopes for:
+  - `Colors`
+  - `Typography`
+  - `Device`
+- scan modes:
   - `Selection only`
   - `Selection + internal layers`
   - `Selection + semantic internal layers`
-- property-family toggles:
-  - `Colors`
-  - `Typography`
-  - `Spacing`
-  - `Radius`
-  - `Size`
-  - `Border`
-  - `Opacity`
-- semantic classifier settings:
+- semantic classifier controls:
   - allowlist
   - denylist
-- component presets:
+- presets:
   - `General`
   - `Buttons`
   - `Icons`
@@ -44,232 +54,266 @@ The plugin is past the prototype stage. It now has a real token-generation workf
   - `Text only`
   - `Custom`
 
-### Creation and binding
+### Execution controls
 
-- creation of missing token chains
-- safe reuse by exact type and exact value
-- shared-value hoisting across variants and related component branches
-- conflict preflight with per-item actions:
+- `Create and bind`
+- `Create only`
+- `Bind only`
+- live preview column
+- `Already bound` panel
+- `Debug` panel
+- UI window-size presets
+
+### Conflict handling
+
+- preflight conflict detection
+- per-conflict actions:
   - `Skip`
   - `Reuse existing`
   - `Rename proposed`
   - `Create deeper semantic token`
-- resolved-path preview in the conflict UI
+- conflict chain-level labeling
+- resolved path preview
+- semantic fallback conflicts now default to the safe deeper semantic path instead of `skip`
 
-### Execution safety
+### Existing-token compatibility
 
-- execution modes:
-  - `Create and bind`
-  - `Dry run`
-  - `Create only`
-  - `Bind only`
-- skipped / unsupported reporting
-- nested `INSTANCE` nodes ignored
-- standalone opacity skipped at full opacity
-- width / height skipped for `HUG` and `FILL`
-- zero-value creation skipped for gap, padding, radius, and stroke weight
-
-### Unsupported handling
-
-- explicit skip reasons for:
-  - multiple visible fills
-  - multiple visible strokes
-  - gradients
-  - image paints
-  - unresolved text values that still cannot be tokenized safely
+- exact-path matching for existing variables
+- selection-independent fallback matching for shared component prefixes
+- alias compatibility accepted when different alias chains resolve to the same final value
 
 ### Typography
 
-- supports:
-  - `fontSize`
-  - `fontFamily`
-  - `fontWeight`
+Supported:
+
+- `fontSize`
+- `fontFamily`
+- `fontWeight`
+- `lineHeight`
+- `letterSpacing`
+- `paragraphSpacing`
+- `paragraphIndent`
+
+Current text behavior:
+
+- mixed-range support in a first pass
+- stable `text-range-N` suffixes
+- percent-to-pixel conversion for:
   - `lineHeight`
+  - `letterSpacing`
+- no new variables for default-like text values such as `0` or `AUTO`
+
+### Effects
+
+Supported effect types:
+
+- `DROP_SHADOW`
+- `INNER_SHADOW`
+- `LAYER_BLUR`
+- `BACKGROUND_BLUR`
+
+Supported effect fields:
+
+- effect color
+- effect radius
+- effect spread
+- effect offset X
+- effect offset Y
+
+Current behavior:
+
+- effect color goes to `color`
+- numeric effect fields go to `device`
+- default-like zero effect values do not create new variables
+
+### Safety rules
+
+- skip full-opacity standalone tokens
+- skip width and height for `HUG` and `FILL`
+- skip zero-value creation for:
+  - gap
+  - padding
+  - radius
+  - stroke weight
+- skip zero-value creation for text layout defaults:
   - `letterSpacing`
   - `paragraphSpacing`
   - `paragraphIndent`
-- supports first-pass mixed-range text binding for those fields
-- percent-based `lineHeight` and `letterSpacing` are converted to pixels when a numeric font size is available
-- stable mixed-range token suffixes:
-  - `text-range-1`
-  - `text-range-2`
-- zero/default text layout creation skipped for:
-  - `letterSpacing = 0`
-  - `paragraphSpacing = 0`
-  - `paragraphIndent = 0`
-- `AUTO` line height skipped
+- skip zero-value creation for effect defaults:
+  - `effects.radius`
+  - `effects.spread`
+  - `effects.offsetX`
+  - `effects.offsetY`
+- skip `AUTO` line height
+- only read padding and gap from auto-layout nodes
+- ignore nested instances
+- ignore selected layers inside nested instances
+- stop traversal on:
+  - masks
+  - subtract / boolean wrappers
 
-## Current limitations
+### Naming rules now in place
 
-### 1. Paint support is intentionally narrow
+- singular collection naming:
+  - `color`
+  - `typography`
+  - `device`
+- stroke-related groups use `stroke`, not `border`
+- duplicate leaves like `border/border` are collapsed
+- scoped device semantic paths keep the semantic bucket first
+
+### Testing foundation
+
+- `npm run build`
+- `npm test`
+- extracted pure logic in:
+  - `src/testable.ts`
+- regression coverage for:
+  - variant parsing
+  - prefix hoisting
+  - fallback candidate paths
+  - token path normalization
+  - typography conversion
+  - mixed-range naming
+  - effect path naming
+  - default zero-value skips
+  - stroke naming normalization
+  - scoped device semantic ordering
+
+## Current weak spots
+
+### 1. Real-world paint support is still intentionally narrow
 
 Current behavior:
 
 - only single visible solid fills and strokes are tokenized
 
-Still missing:
+Still weak:
 
-- multi-paint token strategies
-- gradient token handling
-- image token handling
-- better rules for overlays and effect-like paints
+- multi-paint nodes
+- layered icon paints
+- more nuanced gradient policy
+- image-paint strategy
 
-### 2. Typography support is still partial
+### 2. Existing-system compatibility still needs wider regression testing
 
-Current behavior:
+Current logic is much safer than before, but it still needs broader validation on:
 
-- supports:
-  - the main scalar text fields
-  - first-pass mixed-range text binding
+- partially tokenized systems
+- renamed semantic trees
+- older files with inconsistent grouping
+- files that already contain path shapes from earlier TokenMagic experiments
 
-Still missing:
+### 3. Semantic classification is still project-sensitive
 
-- future composite typography tokens
-- more robust naming for mixed text ranges
-- richer rules for deciding when a text property is “default” and should stay out of tokens
-- broader testing on long, complex rich-text nodes
+Allowlist and denylist help, but the model is still intentionally simple.
 
-### 3. Existing-system compatibility needs broader testing
+Weak areas:
 
-Current behavior:
+- names like `surface`, `container`, `content`
+- icon internals like `primary` and `secondary`
+- deciding when a named layer is meaningful vs structural
 
-- exact reuse is predictable and safe
+### 4. Rich text support is still a first pass
 
-Still missing:
+Mixed ranges work, but the next weak points are:
 
-- more nuanced reuse in partially structured systems
-- better recovery when semantic/base chains already exist with different alias structures
-- more validation against large real-world variable libraries
+- naming quality for complex rich text
+- grouping repeated spans
+- very fragmented rich-text nodes
+- deciding what should stay tokenized vs skipped
 
-### 4. Semantic classification is configurable, but still simple
+### 5. UI is functional, but still not settled
 
-Current behavior:
+The current UI works, but still needs product refinement around:
 
-- allowlist / denylist exists
-- presets seed useful defaults
-
-Still missing:
-
-- project-level saved classifier profiles
-- richer matching for nested naming conventions
-- better treatment of ambiguous names like:
-  - `surface`
-  - `container`
-  - `content`
-  - `primary`
-
-### 5. UI still needs one more product pass
-
-Current behavior:
-
-- settings, queues, conflicts, skips, and execution modes are all in place
-
-Still missing:
-
-- tighter list density
-- cleaner empty states
-- more compact conflict editing
-- stronger visual system consistency
+- very dense long lists
+- conflict editing ergonomics
+- preview readability on large selections
+- clearer distinction between create, bind, already-bound, and skip outcomes
 
 ## Next priorities
 
-### Priority 1: Refine mixed-range typography
+### Priority 1: Real Figma regression testing
 
-Add:
+Use [TESTING.md](/Users/Nikita/Desktop/Файлы/PORTFOLIO/WEB/TokenMagic/TESTING.md) against real files and turn repeated bugs into either:
 
-- better naming rules for mixed text ranges
-- safer grouping of repeated styled spans
-- clearer UI labeling for range-derived tokens
+- a code fix
+- an automated regression test
 
-Why:
+This is still the highest-value work.
 
-- the functionality exists now, but naming and ergonomics still need refinement
+### Priority 2: Existing-token reliability pass
 
-### Priority 2: Better existing-system compatibility
+Improve behavior in partially structured token systems:
 
-Add:
-
-- smarter reuse diagnostics
+- stronger diagnostics for reuse decisions
 - clearer chain-repair flows
-- stronger rerun behavior in partially tokenized files
-
-Why:
-
-- real adoption depends on safe behavior in files that already contain variables
+- safer behavior when old alias trees and newer path rules meet
 
 ### Priority 3: Paint strategy beyond single solid paints
 
-Add:
+Define explicit policy for:
 
-- explicit policy for multi-paint nodes
-- future gradient/image strategies
-- clearer rules for color-only scanning inside shape-heavy/icon-heavy components
+- multi-paint nodes
+- icon layers with overlays
+- gradients
+- images
 
-Why:
+Not everything has to become supported, but behavior should be deliberate and clearly reported.
 
-- this is the biggest remaining gap in color coverage
+### Priority 4: Semantic classification refinement
 
-### Priority 4: Persist project settings
+Refine semantic vs structural rules for:
 
-Add:
+- icons
+- masks
+- boolean wrappers
+- helper layers
+- ambiguous names
 
-- saved semantic allow / deny lists
-- saved default presets
-- saved execution-mode preference
+This should reduce junk tokens without hiding useful internals.
 
-Why:
+### Priority 5: Rich text refinement
 
-- current settings are powerful, but still session-oriented
+Improve mixed-range text behavior:
 
-### Priority 5: Finalize product UI
+- better naming
+- fewer awkward range-derived tokens
+- clearer preview labeling
 
-Add:
+## Longer-term direction
 
-- denser operational layout
-- better queue readability
-- clearer distinction between create, bind, and dry-run flows
+### 1. Saved project settings
 
-Why:
+Persist:
 
-- the workflow is strong enough now that UI polish will pay off directly
+- classifier settings
+- default scan scopes
+- presets
+- execution preferences
 
-## Corner cases still worth solving
+### 2. Composite-token direction
 
-### Colors
+Potential future candidates:
 
-- components with overlays plus base fills
-- vectors/icons that should expose color but not geometry
-- alpha ladder verification across repeated reruns
+- typography composites
+- border/stroke composites
+- shadow composites
 
-### Typography
+### 3. TokenMagic Pro split
 
-- naming quality for mixed text ranges
-- text-only component presets with richer defaults
+The public MIT version should keep focusing on:
 
-### Device
+- reliability
+- predictable token generation
+- strong testing
+- safe creation and binding
 
-- clearer handling for structural geometry versus semantic layout parts
-- better grouping for icon or illustration components
+Future Pro work can focus on:
 
-### Selection model
-
-- mixed internal-layer selection across multiple owning components
-- clearer ownership/variant context in the UI
-
-## DTCG-aligned direction
-
-Useful references:
-
-- https://www.designtokens.org/
-- https://www.designtokens.org/tr/drafts/format/
-
-TokenMagic is already aligned in a few important ways:
-
-- aliases are first-class through `component -> semantic -> base`
-- grouping is tool-defined and opinionated by workflow
-- future composite tokens make sense for:
-  - typography
-  - border
-  - shadow
-
-The main remaining DTCG-related work is not format alignment. It is making the plugin’s scanning and creation policies more expressive without turning them into hidden heuristics.
+- saved project profiles
+- migration/import flows
+- advanced audits and reports
+- smarter repair of existing systems
+- batch and team workflows

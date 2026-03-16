@@ -48,7 +48,7 @@ body {
 
 .shell {
   width: 100%;
-  max-width: 880px;
+  max-width: 100%;
   height: 100vh;
   max-height: 100vh;
   display: grid;
@@ -61,6 +61,7 @@ body {
   gap: 12px;
   border-bottom: 1px solid var(--border);
   background: #000;
+  padding: 6px 14px 0px 14px;
 }
 
 .topbar-title {
@@ -79,7 +80,6 @@ p {
 h1 {
   font-size: 14px;
   font-weight: 600;
-  letter-spacing: -0.02em;
 }
 
 .wordmark {
@@ -92,7 +92,7 @@ h1 {
   letter-spacing: 0.1em;
   transform-origin: left center;
   white-space: nowrap;
-  text-align: center;
+  text-align: left;
 }
 
 .subtle {
@@ -101,33 +101,49 @@ h1 {
 }
 
 .content {
-  padding: 14px;
   display: grid;
-  gap: 10px;
-  align-content: start;
-  overflow: auto;
+  grid-template-rows: auto auto 1fr;
+  gap: 0px;
+  overflow: hidden;
   min-height: 0;
   background: #000;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: stretch;
+  min-height: 0;
+  padding: 0 !important;
+}
+
+.workspace-column {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
 }
 
-.content::-webkit-scrollbar {
+.workspace-column::-webkit-scrollbar {
   width: 10px;
 }
 
-.content::-webkit-scrollbar-track {
+.workspace-column::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.content::-webkit-scrollbar-thumb {
+.workspace-column::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.14);
   border: 2px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
 }
 
-.content::-webkit-scrollbar-thumb:hover {
+.workspace-column::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.22);
   border: 2px solid transparent;
   background-clip: padding-box;
@@ -210,6 +226,21 @@ h2 {
   word-break: break-word;
 }
 
+.debug-output {
+  margin: 0;
+  min-height: 120px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted-strong);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .path {
   font: 12px/1.45 "SF Mono", "Roboto Mono", "Geist Mono", "Menlo", monospace;
   color: var(--muted);
@@ -271,6 +302,11 @@ textarea {
   gap: 10px;
 }
 
+.preview-group {
+  display: grid;
+  gap: 8px;
+}
+
 .setting-label {
   display: grid;
   gap: 6px;
@@ -285,6 +321,8 @@ textarea {
 .actions {
   display: grid;
   grid-template-columns: 1fr;
+  gap: 8px;
+  width: 100%;
 }
 
 button {
@@ -296,11 +334,17 @@ button {
   font-weight: 600;
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease;
+  width: 100%;
 }
 
 .primary {
   background: #fafafa;
   color: #0a0a0b;
+}
+
+.secondary {
+  background: #050505;
+  color: var(--text);
 }
 
 .statline {
@@ -344,6 +388,17 @@ code {
   position: sticky;
   bottom: 0;
   z-index: 10;
+  width: 100%;
+}
+
+@media (max-width: 560px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 input:focus-visible,
@@ -354,6 +409,7 @@ button:focus-visible {
   border-color: rgba(255, 255, 255, 0.35);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
 }
+
 </style>
 </head>
 
@@ -366,115 +422,154 @@ button:focus-visible {
             <h1 class="wordmark">TokenMagic</h1>
           </div>
         </section>
-        <p id="selection-summary" class="subtle">Reading selection…</p>
-        <section class="panel">
-          <div class="section-title">
-            <h2>Settings</h2>
+        <div class="workspace">
+          <div class="workspace-column settings-column">
+            <section class="panel settings-panel">
+              <div class="section-title">
+                <h2>Settings</h2>
+              </div>
+              <div class="stack">
+                <label class="setting-label">
+                  <span>Component preset</span>
+                  <select id="component-preset">
+                    <option value="general" selected>General</option>
+                    <option value="button">Buttons</option>
+                    <option value="icon">Icons</option>
+                    <option value="form-control">Form controls</option>
+                    <option value="text-only">Text only</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </label>
+                <label class="setting-label">
+                  <span>Window size</span>
+                  <select id="window-size">
+                    <option value="compact">Compact</option>
+                    <option value="standard" selected>Standard</option>
+                    <option value="expanded">Expanded</option>
+                  </select>
+                </label>
+                <label class="setting-label">
+                  <span>Execution mode</span>
+                  <select id="execution-mode">
+                    <option value="create-and-bind" selected>Create and bind</option>
+                    <option value="create-only">Create only</option>
+                    <option value="bind-only">Bind only</option>
+                  </select>
+                </label>
+                <label class="setting-label">
+                  <span>Colors scan scope</span>
+                  <select id="colors-scan-mode">
+                    <option value="selected-objects">Selection only</option>
+                    <option value="selected-objects-with-internal-layers">Selection + internal layers</option>
+                    <option value="selected-objects-with-semantic-internal-layers" selected>Selection + semantic internal
+                      layers</option>
+                  </select>
+                </label>
+                <label class="setting-label">
+                  <span>Typography scan scope</span>
+                  <select id="typography-scan-mode">
+                    <option value="selected-objects">Selection only</option>
+                    <option value="selected-objects-with-internal-layers">Selection + internal layers</option>
+                    <option value="selected-objects-with-semantic-internal-layers" selected>Selection + semantic internal
+                      layers</option>
+                  </select>
+                </label>
+                <label class="setting-label">
+                  <span>Device scan scope</span>
+                  <select id="device-scan-mode">
+                    <option value="selected-objects" selected>Selection only</option>
+                    <option value="selected-objects-with-internal-layers">Selection + internal layers</option>
+                    <option value="selected-objects-with-semantic-internal-layers">Selection + semantic internal layers
+                    </option>
+                  </select>
+                </label>
+                <div class="setting-help">
+                  Semantic internal layers include named UI parts like <code>label</code>, <code>icon</code>,
+                  <code>bg</code>, and <code>border</code>.
+                  Use the lists below to tighten or relax what semantic mode includes.
+                </div>
+                <label class="setting-label">
+                  <span>Semantic allowlist</span>
+                  <textarea id="semantic-allowlist" rows="3" placeholder="label, icon, bg, border"></textarea>
+                </label>
+                <label class="setting-label">
+                  <span>Semantic denylist</span>
+                  <textarea id="semantic-denylist" rows="4"
+                    placeholder="vector, group, path, primary, secondary"></textarea>
+                </label>
+                <div class="chips" id="family-toggles"></div>
+                <label class="chip">
+                  <input id="create-base-toggle" type="checkbox" checked />
+                  <span>Create missing base variables</span>
+                </label>
+              </div>
+            </section>
           </div>
-          <div class="stack">
-            <label class="setting-label">
-              <span>Component preset</span>
-              <select id="component-preset">
-                <option value="general" selected>General</option>
-                <option value="button">Buttons</option>
-                <option value="icon">Icons</option>
-                <option value="form-control">Form controls</option>
-                <option value="text-only">Text only</option>
-                <option value="custom">Custom</option>
-              </select>
-            </label>
-            <label class="setting-label">
-              <span>Execution mode</span>
-              <select id="execution-mode">
-                <option value="create-and-bind" selected>Create and bind</option>
-                <option value="dry-run">Dry run</option>
-                <option value="create-only">Create only</option>
-                <option value="bind-only">Bind only</option>
-              </select>
-            </label>
-            <label class="setting-label">
-              <span>Colors scan scope</span>
-              <select id="colors-scan-mode">
-                <option value="selected-objects">Selection only</option>
-                <option value="selected-objects-with-internal-layers">Selection + internal layers</option>
-                <option value="selected-objects-with-semantic-internal-layers" selected>Selection + semantic internal
-                  layers</option>
-              </select>
-            </label>
-            <label class="setting-label">
-              <span>Typography scan scope</span>
-              <select id="typography-scan-mode">
-                <option value="selected-objects">Selection only</option>
-                <option value="selected-objects-with-internal-layers">Selection + internal layers</option>
-                <option value="selected-objects-with-semantic-internal-layers" selected>Selection + semantic internal
-                  layers</option>
-              </select>
-            </label>
-            <label class="setting-label">
-              <span>Device scan scope</span>
-              <select id="device-scan-mode">
-                <option value="selected-objects" selected>Selection only</option>
-                <option value="selected-objects-with-internal-layers">Selection + internal layers</option>
-                <option value="selected-objects-with-semantic-internal-layers">Selection + semantic internal layers
-                </option>
-              </select>
-            </label>
-            <div class="setting-help">
-              Semantic internal layers include named UI parts like <code>label</code>, <code>icon</code>,
-              <code>bg</code>, and <code>border</code>.
-              Use the lists below to tighten or relax what semantic mode includes.
-            </div>
-            <label class="setting-label">
-              <span>Semantic allowlist</span>
-              <textarea id="semantic-allowlist" rows="3" placeholder="label, icon, bg, border"></textarea>
-            </label>
-            <label class="setting-label">
-              <span>Semantic denylist</span>
-              <textarea id="semantic-denylist" rows="4"
-                placeholder="vector, group, path, primary, secondary"></textarea>
-            </label>
-            <div class="chips" id="family-toggles"></div>
-            <label class="chip">
-              <input id="create-base-toggle" type="checkbox" checked />
-              <span>Create missing base variables</span>
-            </label>
-          </div>
-        </section>
 
-        <section class="panel">
-          <div class="section-title">
-            <h2>Ready to bind</h2>
-            <span id="ready-count">0 items</span>
-          </div>
-          <div id="ready-list" class="list"></div>
-        </section>
+          <div class="workspace-column results-column">
+            <section class="panel">
+              <div class="section-title">
+                <h2>Ready to bind</h2>
+                <span id="ready-count">0 items</span>
+              </div>
+              <div id="ready-list" class="list"></div>
+            </section>
 
-        <section class="panel">
-          <div class="section-title">
-            <h2>Unmatched</h2>
-            <span id="unmatched-count">0 items</span>
-          </div>
-          <div id="unmatched-list" class="list"></div>
-        </section>
+            <section class="panel">
+              <div class="section-title">
+                <h2>Already bound</h2>
+                <span id="already-bound-count">0 items</span>
+              </div>
+              <div id="already-bound-list" class="list"></div>
+            </section>
 
-        <section class="panel">
-          <div class="section-title">
-            <h2>Conflicts</h2>
-            <span id="conflicts-count">0 items</span>
-          </div>
-          <div id="conflicts-list" class="list"></div>
-        </section>
+            <section class="panel">
+              <div class="section-title">
+                <h2>Unmatched</h2>
+                <span id="unmatched-count">0 items</span>
+              </div>
+              <div id="unmatched-list" class="list"></div>
+            </section>
 
-        <section class="panel">
-          <div class="section-title">
-            <h2>Skipped / unsupported</h2>
-            <span id="skipped-count">0 items</span>
+            <section class="panel">
+              <div class="section-title">
+                <h2>Conflicts</h2>
+                <span id="conflicts-count">0 items</span>
+              </div>
+              <div id="conflicts-list" class="list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="section-title">
+                <h2>Skipped / unsupported</h2>
+                <span id="skipped-count">0 items</span>
+              </div>
+              <div id="skipped-list" class="list"></div>
+            </section>
           </div>
-          <div id="skipped-list" class="list"></div>
-        </section>
+
+          <div class="workspace-column preview-column">
+            <section class="panel preview-panel">
+              <div class="section-title">
+                <h2>Preview changes</h2>
+                <span id="preview-count">0 items</span>
+              </div>
+              <div id="preview-list" class="list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="section-title">
+                <h2>Debug</h2>
+                <span id="debug-count">0 lines</span>
+              </div>
+              <pre id="debug-output" class="debug-output">No debug output yet.</pre>
+            </section>
+          </div>
+        </div>
       </main>
 
       <section class="footer">
+        <p id="selection-summary" class="subtle">Reading selection…</p>
         <div id="summary" class="summary">Waiting for selection.</div>
         <div id="errors" class="errors"></div>
         <div class="actions">
@@ -495,7 +590,12 @@ button:focus-visible {
       opacity: "Opacity"
     };
 
-    const DEFAULT_DENYLIST = ["vector", "group", "path", "primary", "secondary"];
+    const DEFAULT_DENYLIST = ["vector", "group", "path", "primary", "secondary", "mask", "subtract"];
+    const WINDOW_SIZES = {
+      compact: { width: 960, height: 700 },
+      standard: { width: 1200, height: 760 },
+      expanded: { width: 1440, height: 840 }
+    };
 
     const PRESETS = {
       general: {
@@ -582,9 +682,17 @@ button:focus-visible {
 
     const state = {
       ready: [],
+      alreadyBound: [],
       unmatched: [],
       skippedItems: [],
       conflicts: [],
+      debug: [],
+      executeDebug: [],
+      preview: {
+        toBind: [],
+        toCreate: []
+      },
+      windowSize: "standard",
       preset: "general",
       executionMode: "create-and-bind",
       settings: {
@@ -606,19 +714,26 @@ button:focus-visible {
     };
 
     const readyList = document.getElementById("ready-list");
+    const alreadyBoundList = document.getElementById("already-bound-list");
     const unmatchedList = document.getElementById("unmatched-list");
     const skippedList = document.getElementById("skipped-list");
     const conflictsList = document.getElementById("conflicts-list");
+    const previewList = document.getElementById("preview-list");
+    const debugOutput = document.getElementById("debug-output");
     const readyCount = document.getElementById("ready-count");
+    const alreadyBoundCount = document.getElementById("already-bound-count");
     const unmatchedCount = document.getElementById("unmatched-count");
     const skippedCount = document.getElementById("skipped-count");
     const conflictsCount = document.getElementById("conflicts-count");
+    const previewCount = document.getElementById("preview-count");
+    const debugCount = document.getElementById("debug-count");
     const summary = document.getElementById("summary");
     const selectionSummary = document.getElementById("selection-summary");
     const errors = document.getElementById("errors");
     const confirmButton = document.getElementById("confirm");
     const createBaseToggle = document.getElementById("create-base-toggle");
     const componentPresetSelect = document.getElementById("component-preset");
+    const windowSizeSelect = document.getElementById("window-size");
     const executionModeSelect = document.getElementById("execution-mode");
     const colorsScanModeSelect = document.getElementById("colors-scan-mode");
     const typographyScanModeSelect = document.getElementById("typography-scan-mode");
@@ -635,42 +750,74 @@ button:focus-visible {
 
       if (message.type === "analysis") {
         state.ready = message.ready;
+        state.alreadyBound = message.alreadyBound || [];
         state.unmatched = message.unmatched;
         state.skippedItems = message.skippedItems || [];
         state.conflicts = message.conflicts || [];
+        state.debug = message.debug || [];
+        state.executeDebug = [];
         state.settings = message.settings || state.settings;
+        window.__tokenMagicState = state;
+        if (state.debug.length) {
+          console.groupCollapsed("[TokenMagic debug]");
+          for (const line of state.debug) {
+            console.log(line);
+          }
+          console.groupEnd();
+          window.__tokenMagicDebug = state.debug;
+        }
         renderAnalysis(message);
         return;
       }
 
       if (message.type === "summary") {
+        window.__tokenMagicLastSummary = message;
+        state.executeDebug = message.debug || [];
+        if (message.debug?.length) {
+          console.groupCollapsed("[TokenMagic execute debug]");
+          for (const line of message.debug) {
+            console.log(line);
+          }
+          console.groupEnd();
+          window.__tokenMagicExecuteDebug = message.debug;
+        }
         renderSummary(message);
+        renderDebug();
       }
     };
 
     confirmButton.addEventListener("click", () => {
+      const payload = {
+        type: "confirm-bind",
+        executionMode: state.executionMode,
+        readyIds: state.ready.filter((item) => item.checked).map((item) => item.id),
+        createBaseVariables: createBaseToggle.checked,
+        unmatched: state.unmatched.map((item) => ({
+          id: item.id,
+          label: item.label,
+          basePath: item.basePath,
+          semanticPath: item.semanticPath,
+          componentPath: item.componentPath,
+          skip: Boolean(item.skip),
+          variantProperties: item.selectedVariantProperties
+        })),
+        conflicts: state.conflicts.map((item) => ({
+          id: item.id,
+          action: item.action,
+          proposedPath: item.proposedPath,
+          pathKind: item.pathKind,
+          fallbackPath: item.fallbackPath
+        }))
+      };
+      window.__tokenMagicLastConfirmPayload = payload;
+      console.groupCollapsed("[TokenMagic confirm payload]");
+      console.log(payload);
+      console.groupEnd();
       parent.postMessage(
         {
           pluginMessage: {
-            type: "confirm-bind",
-            executionMode: state.executionMode,
-            readyIds: state.ready.filter((item) => item.checked).map((item) => item.id),
-            createBaseVariables: createBaseToggle.checked,
-            unmatched: state.unmatched.map((item) => ({
-              id: item.id,
-              basePath: item.basePath,
-              semanticPath: item.semanticPath,
-              componentPath: item.componentPath,
-              skip: Boolean(item.skip),
-              variantProperties: item.selectedVariantProperties
-            })),
-            conflicts: state.conflicts.map((item) => ({
-              id: item.id,
-              action: item.action,
-              proposedPath: item.proposedPath,
-              pathKind: item.pathKind,
-              fallbackPath: item.fallbackPath
-            }))
+            ...payload,
+            unmatched: payload.unmatched.map(({ label, ...item }) => item)
           }
         },
         "*"
@@ -695,8 +842,24 @@ button:focus-visible {
       requestAnalysis();
     });
 
+    windowSizeSelect.addEventListener("change", () => {
+      state.windowSize = windowSizeSelect.value;
+      const size = WINDOW_SIZES[state.windowSize] || WINDOW_SIZES.standard;
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: "resize-ui",
+            width: size.width,
+            height: size.height
+          }
+        },
+        "*"
+      );
+    });
+
     executionModeSelect.addEventListener("change", () => {
       state.executionMode = executionModeSelect.value;
+      renderPreview();
     });
 
     componentPresetSelect.addEventListener("change", () => {
@@ -720,9 +883,14 @@ button:focus-visible {
       requestAnalysis();
     });
 
+    createBaseToggle.addEventListener("change", () => {
+      renderPreview();
+    });
+
 
     function renderAnalysis(message) {
       componentPresetSelect.value = state.preset;
+      windowSizeSelect.value = state.windowSize;
       executionModeSelect.value = state.executionMode;
       colorsScanModeSelect.value = state.settings.colorsScanMode;
       typographyScanModeSelect.value = state.settings.typographyScanMode;
@@ -736,9 +904,12 @@ button:focus-visible {
       errors.textContent = "";
       renderFamilyToggles();
       renderReady();
+      renderAlreadyBound();
       renderUnmatched();
       renderSkipped();
       renderConflicts();
+      renderPreview();
+      renderDebug();
     }
 
     function renderReady() {
@@ -764,8 +935,29 @@ button:focus-visible {
         const checkbox = row.querySelector("input");
         checkbox.addEventListener("change", () => {
           item.checked = checkbox.checked;
+          renderPreview();
         });
         readyList.appendChild(row);
+      }
+    }
+
+    function renderAlreadyBound() {
+      alreadyBoundList.innerHTML = "";
+      alreadyBoundCount.textContent = `${state.alreadyBound.length} item${state.alreadyBound.length === 1 ? "" : "s"}`;
+
+      if (!state.alreadyBound.length) {
+        alreadyBoundList.innerHTML = '<div class="empty">No properties were detected as already bound.</div>';
+        return;
+      }
+
+      for (const item of state.alreadyBound) {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML = `
+            <div class="label">${escapeHtml(item.label)}</div>
+            <div class="path">${escapeHtml(item.path)}</div>
+          `;
+        alreadyBoundList.appendChild(row);
       }
     }
 
@@ -795,7 +987,7 @@ button:focus-visible {
             </div>
             <div class="chips"></div>
             <label class="chip">
-              <input type="checkbox" ${item.skip ? "checked" : ""} />
+              <input type="checkbox" data-field="skip" ${item.skip ? "checked" : ""} />
               <span>Skip</span>
             </label>
           `;
@@ -805,12 +997,15 @@ button:focus-visible {
         const componentInput = row.querySelector('input[data-field="component"]');
         baseInput.addEventListener("input", () => {
           item.basePath = baseInput.value;
+          renderPreview();
         });
         semanticInput.addEventListener("input", () => {
           item.semanticPath = semanticInput.value;
+          renderPreview();
         });
         componentInput.addEventListener("input", () => {
           item.componentPath = componentInput.value;
+          renderPreview();
         });
 
         const chips = row.querySelector(".chips");
@@ -830,13 +1025,19 @@ button:focus-visible {
             } else {
               item.selectedVariantProperties = item.selectedVariantProperties.filter((value) => value !== property);
             }
+            renderPreview();
           });
           chips.appendChild(chip);
         }
 
-        const skipCheckbox = row.querySelectorAll('input[type="checkbox"]')[item.variantProperties.length ? item.variantProperties.length + 1 : 1];
+        const skipCheckbox = row.querySelector('input[data-field="skip"]');
+        if (!skipCheckbox) {
+          unmatchedList.appendChild(row);
+          continue;
+        }
         skipCheckbox.addEventListener("change", () => {
           item.skip = skipCheckbox.checked;
+          renderPreview();
         });
 
         unmatchedList.appendChild(row);
@@ -912,15 +1113,218 @@ button:focus-visible {
           pathField.style.display = item.action === "rename-proposed" ? "grid" : "none";
           item.resolvedPreviewPath = getConflictResolvedPath(item);
           resolvedPreview.textContent = item.resolvedPreviewPath;
+          renderPreview();
         });
         pathInput.addEventListener("input", () => {
           item.proposedPath = pathInput.value;
           item.resolvedPreviewPath = getConflictResolvedPath(item);
           resolvedPreview.textContent = item.resolvedPreviewPath;
+          renderPreview();
         });
 
         conflictsList.appendChild(row);
       }
+    }
+
+    function renderPreview() {
+      try {
+        const preview = buildPreviewState();
+        state.preview = preview;
+        previewList.innerHTML = "";
+        const count = preview.toBind.length + preview.toCreate.length;
+        previewCount.textContent = `${count} item${count === 1 ? "" : "s"}`;
+
+        if (!count) {
+          previewList.innerHTML = `
+            <div class="empty">
+              No preview items yet.
+              <br />
+              Bindable matches and creatable token paths will appear here automatically after analysis.
+            </div>
+          `;
+          return;
+        }
+
+        if (preview.toBind.length) {
+          const bindSection = document.createElement("div");
+          bindSection.className = "preview-group";
+          bindSection.innerHTML = `
+            <div class="field-label">Could bind</div>
+            <div class="list"></div>
+          `;
+          const list = bindSection.querySelector(".list");
+          for (const item of preview.toBind) {
+            const row = document.createElement("div");
+            row.className = "row";
+            row.innerHTML = `
+              <div class="label">${escapeHtml(item.label)}</div>
+              <div class="path">${escapeHtml(item.path)}</div>
+            `;
+            list.appendChild(row);
+          }
+          previewList.appendChild(bindSection);
+        }
+
+        if (preview.toCreate.length) {
+          const createSection = document.createElement("div");
+          createSection.className = "preview-group";
+          createSection.innerHTML = `
+            <div class="field-label">Could create</div>
+            <div class="list"></div>
+          `;
+          const list = createSection.querySelector(".list");
+          for (const item of preview.toCreate) {
+            const row = document.createElement("div");
+            row.className = "row";
+            row.innerHTML = `
+              <div class="label">${escapeHtml(item.label)}</div>
+              <div class="path">${escapeHtml(item.path)}</div>
+            `;
+            list.appendChild(row);
+          }
+          previewList.appendChild(createSection);
+        }
+
+        const createCount = preview.toCreate.length;
+        const bindCount = preview.toBind.length;
+        const modeLabel = getExecutionModeLabel(state.executionMode);
+        summary.textContent = `${modeLabel}: ${createCount} variable path${createCount === 1 ? "" : "s"} could be created, ${bindCount} binding${bindCount === 1 ? "" : "s"} could be applied.`;
+        errors.textContent = "";
+      } catch (error) {
+        previewList.innerHTML = `<div class="empty">Preview failed to render.</div>`;
+        previewCount.textContent = "0 items";
+        errors.textContent = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    function buildPreviewState() {
+      const preview = {
+        toBind: [],
+        toCreate: []
+      };
+      const createSeen = new Set();
+      const shouldCreate = state.executionMode !== "bind-only";
+      const shouldBind = state.executionMode !== "create-only";
+      const readyItems = Array.isArray(state.ready) ? state.ready : [];
+      const unmatchedItems = Array.isArray(state.unmatched) ? state.unmatched : [];
+      const conflictItems = Array.isArray(state.conflicts) ? state.conflicts : [];
+
+      if (shouldBind) {
+        for (const item of readyItems) {
+          if (item.checked === false) {
+            continue;
+          }
+          preview.toBind.push({
+            label: item.label || "Ready item",
+            path: item.path || "Existing variable"
+          });
+        }
+      }
+
+      for (const item of unmatchedItems) {
+        if (item.skip === true) {
+          continue;
+        }
+        if (shouldCreate) {
+          appendPreviewPath(
+            preview.toCreate,
+            createSeen,
+            item.label || "Unmatched item",
+            normalizePreviewPath(item.basePath),
+            createBaseToggle.checked
+          );
+          appendPreviewPath(
+            preview.toCreate,
+            createSeen,
+            item.label || "Unmatched item",
+            normalizePreviewPath(item.semanticPath),
+            true
+          );
+          appendPreviewPath(
+            preview.toCreate,
+            createSeen,
+            item.label || "Unmatched item",
+            normalizePreviewPath(item.componentPath),
+            true
+          );
+        }
+        if (shouldBind) {
+          preview.toBind.push({
+            label: item.label || "Unmatched item",
+            path:
+              normalizePreviewPath(item.componentPath) ||
+              normalizePreviewPath(item.semanticPath) ||
+              normalizePreviewPath(item.basePath) ||
+              "New variable"
+          });
+        }
+      }
+
+      for (const item of conflictItems) {
+        if (item.action === "skip") {
+          continue;
+        }
+        if (shouldCreate && item.action !== "reuse-existing") {
+          appendPreviewPath(
+            preview.toCreate,
+            createSeen,
+            item.label || "Conflict item",
+            normalizePreviewPath(getConflictResolvedPath(item)),
+            true
+          );
+        }
+        if (shouldBind) {
+          preview.toBind.push({
+            label: item.label || "Conflict item",
+            path:
+              normalizePreviewPath(item.action === "reuse-existing" ? item.path : getConflictResolvedPath(item)) ||
+              "Resolved variable"
+          });
+        }
+      }
+
+      return preview;
+    }
+
+    function appendPreviewPath(list, seen, label, path, include) {
+      if (!include || !path) {
+        return;
+      }
+      if (seen.has(path)) {
+        return;
+      }
+      seen.add(path);
+      list.push({ label, path });
+    }
+
+    function normalizePreviewPath(path) {
+      if (typeof path !== "string") {
+        return "";
+      }
+      return path.trim();
+    }
+
+    function clearPreview() {
+      state.preview = { toBind: [], toCreate: [] };
+      previewList.innerHTML = `
+        <div class="empty">
+          No preview items yet.
+          <br />
+          Bindable matches and creatable token paths will appear here automatically after analysis.
+        </div>
+      `;
+      previewCount.textContent = "0 items";
+      summary.textContent = "Review the queue and preview before confirming.";
+    }
+
+    function getExecutionModeLabel(mode) {
+      if (mode === "create-only") {
+        return "Preview create only";
+      }
+      if (mode === "bind-only") {
+        return "Preview bind only";
+      }
+      return "Preview create and bind";
     }
 
     function getConflictResolvedPath(item) {
@@ -954,9 +1358,7 @@ button:focus-visible {
     }
 
     function renderSummary(message) {
-      if (message.executionMode === "dry-run") {
-        summary.textContent = `Dry run: ${message.plannedCreated || 0} variables would be created, ${message.plannedBound || 0} bindings would be applied, ${message.skipped} skipped, ${message.errors.length} errors.`;
-      } else if (message.executionMode === "create-only") {
+      if (message.executionMode === "create-only") {
         summary.textContent = `${message.created} variables created, ${message.skipped} skipped, ${message.errors.length} errors.`;
       } else if (message.executionMode === "bind-only") {
         summary.textContent = `${message.bound} bound successfully, ${message.skipped} skipped, ${message.errors.length} errors.`;
@@ -970,6 +1372,12 @@ button:focus-visible {
         row.textContent = error;
         errors.appendChild(row);
       }
+    }
+
+    function renderDebug() {
+      const lines = [...(state.debug || []), ...(state.executeDebug || [])];
+      debugCount.textContent = `${lines.length} line${lines.length === 1 ? "" : "s"}`;
+      debugOutput.textContent = lines.length ? lines.join("\n") : "No debug output yet.";
     }
 
     function requestAnalysis() {
@@ -1041,6 +1449,8 @@ button:focus-visible {
         componentPresetSelect.value = "custom";
       }
     }
+
+    clearPreview();
   </script>
 </body>
 
